@@ -8,9 +8,15 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +40,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -98,8 +109,8 @@ fun buildItems(apps: List<AppInfo>, cfg: Config): Built {
 }
 
 fun rowHeight(cfg: Config): Float {
-    val icon = if (cfg.labelMode == "name") 0f else cfg.iconSize + 16f
-    return maxOf(icon, cfg.fontSize * 2f, 48f)
+    val icon = if (cfg.labelMode == "name") 0f else cfg.iconSize + 12f
+    return maxOf(icon, cfg.fontSize * 1.75f, 44f)
 }
 
 val AZ: List<String> = listOf("◎") + ('A'..'Z').map { it.toString() } + listOf("#", "⚙")
@@ -130,17 +141,26 @@ fun QuadroApp(homeTick: Int) {
     var fingerY by remember { mutableFloatStateOf(0f) }
     var barShown by remember { mutableStateOf(false) }
     var topH by remember { mutableIntStateOf(0) }
+    var picking by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf(false) }
+    var holdAt by remember { mutableStateOf(Offset.Zero) }
+    var gapOrigin by remember { mutableStateOf(Offset.Zero) }
+    val ring = remember { Animatable(0f) }
+    LaunchedEffect(holding) {
+        if (holding) { ring.snapTo(0f); ring.animateTo(1f, tween(1000, easing = LinearEasing)) } else ring.snapTo(0f)
+    }
 
     val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
     val scrolling = listState.isScrollInProgress
 
-    fun closeAll() { editing = false; settings = false; search = false; menuApp = null; barIdx = -1 }
+    fun closeAll() { editing = false; settings = false; search = false; picking = false; menuApp = null; barIdx = -1 }
     LaunchedEffect(homeTick) {
         closeAll()
         listState.animateScrollToItem(0)
     }
-    BackHandler(enabled = menuApp != null || settings || search || editing || !atTop) {
+    BackHandler(enabled = menuApp != null || settings || search || picking || editing || !atTop) {
         when {
+            picking -> picking = false
             menuApp != null -> menuApp = null
             settings -> settings = false
             search -> search = false
@@ -230,7 +250,9 @@ fun QuadroApp(homeTick: Int) {
         val favsH = rh * built.favCount
         val topDp = with(density) { topH.toDp() }
         // espaço vazio no começo da lista: empurra os favoritos pra baixo, sem nunca encostar no relógio
-        val gapDp: Dp = maxOf(screenH - cfg.favBottom.dp - favsH - statusTop, topDp - statusTop + 24.dp)
+        val minGap = topDp - statusTop + cfg.favGap.dp
+        val gapDp: Dp = if (cfg.favAnchor == "top") minGap
+        else maxOf(screenH - cfg.favBottom.dp - favsH - statusTop, minGap)
         val gapPx = with(density) { gapDp.toPx() }.coerceAtLeast(1f)
         val progress = remember(gapPx) {
             derivedStateOf {
@@ -261,16 +283,47 @@ fun QuadroApp(homeTick: Int) {
         ) {
             items(built.items, key = { it.key }) { item ->
                 when (item) {
-                    LI.Gap -> Spacer(Modifier.height(gapDp))
-                    is LI.Fav -> AppRowItem(item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong)
-                    is LI.App -> AppRowItem(item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong)
+                    LI.Gap -> Spacer(
+                        Modifier.fillMaxWidth().height(gapDp)
+                            .onGloballyPositioned { gapOrigin = it.positionInRoot() }
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    holdAt = gapOrigin + down.position
+                                    holding = true
+                                    val timedOut = withTimeoutOrNull(1000L) {
+                                        while (true) {
+                                            val ev = awaitPointerEvent()
+                                            val c = ev.changes.firstOrNull() ?: break
+                                            if (!c.pressed || c.isConsumed) break
+                                            if ((c.position - down.position).getDistance() > viewConfiguration.touchSlop) break
+                                        }
+                                        false
+                                    } == null
+                                    holding = false
+                                    if (timedOut) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        editing = true
+                                    }
+                                }
+                            },
+                    )
+                    is LI.Fav -> AppRowItem(
+                        item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong,
+                        Modifier.graphicsLayer { alpha = if (editing) 0f else 1f },
+                    )
+                    is LI.App -> AppRowItem(
+                        item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong,
+                        Modifier.graphicsLayer { alpha = (progress.value * 2.5f).coerceIn(0f, 1f) },
+                    )
                     is LI.Label -> {
                         val lt: String? = item.letter
                         val txt: String = if (lt == null) item.text.uppercase()
                         else if (cfg.theme == "runa" && lt != "#") runeOf(lt) + "  " + lt
                         else lt
                         Box(
-                            Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 22.dp, bottom = 4.dp),
+                            Modifier.fillMaxWidth().graphicsLayer { alpha = (progress.value * 2.5f).coerceIn(0f, 1f) }
+                                .padding(start = 10.dp, end = 10.dp, top = 22.dp, bottom = 4.dp),
                             contentAlignment = when (al) { "center" -> Alignment.Center; "right" -> Alignment.CenterEnd; else -> Alignment.CenterStart },
                         ) {
                             T(txt, 12f, color = if (lt == null) DIM else acc, weight = 700, face = "mono", letter = 3f)
@@ -281,8 +334,18 @@ fun QuadroApp(homeTick: Int) {
         }
 
         // relógio e blocos do topo: somem conforme a lista sobe
+        // anel que enche enquanto você segura no relógio (1 segundo = edição)
+        if (holding && !editing) Canvas(Modifier.fillMaxSize()) {
+            val v = ring.value
+            if (v > 0.12f) {
+                val r = 30.dp.toPx(); val w = 4.dp.toPx()
+                drawCircle(Color(0x40FFFFFF), r, holdAt, style = Stroke(w))
+                drawArc(acc, -90f, 360f * v, false, Offset(holdAt.x - r, holdAt.y - r), Size(r * 2, r * 2), style = Stroke(w, cap = StrokeCap.Round))
+            }
+        }
+
         TopBlocks(
-            cfg, notifs, batt, charging, editing,
+            cfg, notifs, batt, charging, editing, apps, { picking = true },
             Modifier.onSizeChanged { topH = it.height }
                 .graphicsLayer { alpha = if (editing) 1f else (1f - progress.value * 1.8f).coerceIn(0f, 1f); translationY = if (editing) 0f else -progress.value * 90f },
         )
@@ -291,8 +354,13 @@ fun QuadroApp(homeTick: Int) {
         if (barIdx >= 0) LetterBubble(cfg, AZ[barIdx], fingerY, screenH, statusTop)
 
         if (search) SearchOverlay(cfg, apps, notifPkgs, onApp, onLong) { search = false }
+        if (picking) SearchOverlay(
+            cfg, apps.filter { it.key !in cfg.favs }, notifPkgs,
+            { a -> Store.update { c -> c.copy(favs = c.favs + a.key) }; picking = false }, { },
+            title = "adicionar aos favoritos",
+        ) { picking = false }
         if (editing) EditBar(cfg) { editing = false }
-        menuApp?.let { a -> AppMenu(a, cfg) { menuApp = null } }
+        menuApp?.let { a -> AppMenu(a, cfg, onEdit = { menuApp = null; editing = true; scope.launch { listState.scrollToItem(0) } }) { menuApp = null } }
         if (settings) SettingsScreen(
             onClose = { settings = false },
             onEdit = { settings = false; editing = true; scope.launch { listState.scrollToItem(0) } },
@@ -300,21 +368,31 @@ fun QuadroApp(homeTick: Int) {
     }
 }
 
-/* =================== BLOCOS DO TOPO =================== */
+/* =================== BLOCOS DO TOPO (arrastáveis no modo edição) =================== */
 
 @Composable
-fun TopBlocks(cfg: Config, notifs: List<Notif>, batt: Int, charging: Boolean, editing: Boolean, modifier: Modifier) {
+fun TopBlocks(
+    cfg: Config, notifs: List<Notif>, batt: Int, charging: Boolean, editing: Boolean,
+    apps: List<AppInfo>, onAddFav: () -> Unit, modifier: Modifier,
+) {
     val left = cfg.azSide == "left"
-    val shown = cfg.order.withIndex().filter { (_, k) ->
+    val density = LocalDensity.current
+    val shown = cfg.order.filter { k ->
         val skip = k == "buddy" && (!cfg.buddyOn || cfg.buddyInline)
         !skip && (k !in cfg.hiddenBlocks || editing)
     }
+    val heights = remember { mutableStateMapOf<String, Int>() }
+    var dragKey by remember { mutableStateOf<String?>(null) }
+    var dragOff by remember { mutableFloatStateOf(0f) }
+    val gapPx = with(density) { cfg.blockGap.dp.toPx() }
+    val acc = Color(Accent.current(cfg))
     Column(
         modifier.fillMaxWidth().statusBarsPadding()
-            .padding(start = if (left) 66.dp else 32.dp, end = 26.dp, top = if (editing) 76.dp else 26.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .then(if (editing) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+            .padding(start = if (left) 66.dp else 32.dp, end = 26.dp, top = if (editing) 84.dp else 26.dp, bottom = if (editing) 120.dp else 0.dp),
+        verticalArrangement = Arrangement.spacedBy(cfg.blockGap.dp),
     ) {
-        for ((i, k) in shown) {
+        for (k in shown) key(k) {
             val hid = k in cfg.hiddenBlocks
             val s = cfg.scale[k] ?: 1f
             val al = when (cfg.align[k]) {
@@ -322,13 +400,56 @@ fun TopBlocks(cfg: Config, notifs: List<Notif>, batt: Int, charging: Boolean, ed
                 "right" -> Alignment.End
                 else -> Alignment.Start
             }
+            val dragging = dragKey == k
             Column(
-                Modifier.fillMaxWidth().graphicsLayer { alpha = if (hid) 0.35f else 1f }
-                    .then(if (editing) Modifier.border(1.dp, Color(0x99FFFFFF), cfg.rr(14f)).padding(8.dp) else Modifier),
+                Modifier.fillMaxWidth()
+                    .onSizeChanged { heights[k] = it.height }
+                    .zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (dragging) dragOff else 0f
+                        alpha = if (hid) 0.4f else 1f
+                        val sc = if (dragging) 1.03f else 1f
+                        scaleX = sc; scaleY = sc
+                    }
+                    .then(
+                        if (editing) Modifier
+                            .background(if (dragging) Color(0x55000000) else Color(0x33000000), cfg.rr(22f))
+                            .border(1.dp, if (dragging) acc else Color(0x66FFFFFF), cfg.rr(22f))
+                            .pointerInput(k) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { dragKey = k; dragOff = 0f },
+                                    onDragEnd = { dragKey = null; dragOff = 0f },
+                                    onDragCancel = { dragKey = null; dragOff = 0f },
+                                    onDrag = { ch, d ->
+                                        ch.consume()
+                                        dragOff += d.y
+                                        val vis = Store.cfg.order.filter { it in shown }
+                                        val i = vis.indexOf(k)
+                                        if (dragOff > 0 && i < vis.lastIndex) {
+                                            val nh = heights[vis[i + 1]] ?: 0
+                                            if (dragOff > nh / 2f + gapPx) {
+                                                val o = Store.cfg.order
+                                                Store.update { c -> c.copy(order = c.order.swap(o.indexOf(k), o.indexOf(vis[i + 1]))) }
+                                                dragOff -= nh + gapPx
+                                            }
+                                        } else if (dragOff < 0 && i > 0) {
+                                            val ph = heights[vis[i - 1]] ?: 0
+                                            if (-dragOff > ph / 2f + gapPx) {
+                                                val o = Store.cfg.order
+                                                Store.update { c -> c.copy(order = c.order.swap(o.indexOf(k), o.indexOf(vis[i - 1]))) }
+                                                dragOff += ph + gapPx
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+                            .padding(12.dp)
+                        else Modifier,
+                    ),
                 horizontalAlignment = al,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (editing) EditTools(k, i, cfg)
+                if (editing) EditTools(k, cfg)
                 when (k) {
                     "clock" -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Box(Modifier.weight(1f, fill = false)) { ClockView(cfg, s, notifs.size) }
@@ -340,27 +461,80 @@ fun TopBlocks(cfg: Config, notifs: List<Notif>, batt: Int, charging: Boolean, ed
                 }
             }
         }
+        if (editing) FavEditor(cfg, apps, onAddFav)
     }
 }
 
 @Composable
-fun EditTools(k: String, i: Int, cfg: Config) {
+fun EditTools(k: String, cfg: Config) {
     val acc = Color(Accent.current(cfg))
     val sh = cfg.rr(12f)
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        T(BLOCK_NAMES[k] ?: k, 11f, color = acc, weight = 700, letter = 1f, face = "mono")
-        Spacer(Modifier.width(4.dp))
-        SqBtn("↑", acc, shape = sh) { Store.update { c -> c.copy(order = c.order.swap(i, i - 1)) } }
-        SqBtn("↓", acc, shape = sh) { Store.update { c -> c.copy(order = c.order.swap(i, i + 1)) } }
-        SqBtn("⇔", acc, shape = sh) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        T("≡ " + (BLOCK_NAMES[k] ?: k), 12f, color = acc, weight = 700, face = "mono")
+        Spacer(Modifier.width(6.dp))
+        SqBtn("⇔", Color(0x33FFFFFF), INK, sh) {
             val o = listOf("left", "center", "right")
             Store.update { c -> c.copy(align = c.align + (k to o[(o.indexOf(c.align[k] ?: "left") + 1) % 3])) }
         }
-        SqBtn("−", acc, shape = sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) - 0.1f).coerceAtLeast(0.5f))) } }
-        SqBtn("+", acc, shape = sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) + 0.1f).coerceAtMost(2.2f))) } }
-        SqBtn(if (k in cfg.hiddenBlocks) "◻" else "◼", acc, shape = sh) {
+        SqBtn("−", Color(0x33FFFFFF), INK, sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) - 0.1f).coerceAtLeast(0.5f))) } }
+        SqBtn("+", Color(0x33FFFFFF), INK, sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) + 0.1f).coerceAtMost(2.2f))) } }
+        SqBtn(if (k in cfg.hiddenBlocks) "◻" else "◼", Color(0x33FFFFFF), INK, sh) {
             Store.update { c -> c.copy(hiddenBlocks = if (k in c.hiddenBlocks) c.hiddenBlocks - k else c.hiddenBlocks + k) }
         }
+    }
+}
+
+/** Favoritos no modo edição: segure e arraste pra reordenar, − tira, + adiciona. */
+@Composable
+fun FavEditor(cfg: Config, apps: List<AppInfo>, onAdd: () -> Unit) {
+    val acc = Color(Accent.current(cfg))
+    val density = LocalDensity.current
+    val favs = cfg.favs.mapNotNull { k -> apps.firstOrNull { it.key == k } }
+    val rowPx = with(density) { (rowHeight(cfg) + 6f).dp.toPx() }
+    var dragKey by remember { mutableStateOf<String?>(null) }
+    var dragOff by remember { mutableFloatStateOf(0f) }
+    Column(
+        Modifier.fillMaxWidth().background(Color(0x33000000), cfg.rr(22f)).border(1.dp, Color(0x66FFFFFF), cfg.rr(22f)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        T("≡ FAVORITOS", 12f, color = acc, weight = 700, face = "mono")
+        T("segure um app e arraste pra mudar a ordem", 11f, color = DIM, wrap = true)
+        for (a in favs) key(a.key) {
+            val dragging = dragKey == a.key
+            Row(
+                Modifier.fillMaxWidth().height(rowHeight(cfg).dp)
+                    .zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer { translationY = if (dragging) dragOff else 0f }
+                    .background(if (dragging) Color(0x55FFFFFF) else Color(0x14FFFFFF), cfg.rr(16f))
+                    .pointerInput(a.key) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { dragKey = a.key; dragOff = 0f },
+                            onDragEnd = { dragKey = null; dragOff = 0f },
+                            onDragCancel = { dragKey = null; dragOff = 0f },
+                            onDrag = { ch, d ->
+                                ch.consume()
+                                dragOff += d.y
+                                val f = Store.cfg.favs
+                                val i = f.indexOf(a.key)
+                                if (dragOff > rowPx / 2 && i < f.lastIndex) {
+                                    Store.update { c -> c.copy(favs = c.favs.swap(i, i + 1)) }; dragOff -= rowPx
+                                } else if (dragOff < -rowPx / 2 && i > 0) {
+                                    Store.update { c -> c.copy(favs = c.favs.swap(i, i - 1)) }; dragOff += rowPx
+                                }
+                            },
+                        )
+                    }
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                T("≡", 18f, color = DIM)
+                if (cfg.labelMode != "name") AppIcon(a, cfg.iconSize, cfg)
+                T(if (cfg.lowercase) a.label.lowercase() else a.label, cfg.fontSize, Modifier.weight(1f), weight = cfg.fontWeight, face = themeFace(cfg.theme), ellipsis = true, maxLines = 1)
+                SqBtn("−", Color(0x33FFFFFF), INK, cfg.rr(12f)) { Store.update { c -> c.copy(favs = c.favs - a.key) } }
+            }
+        }
+        SqBtn("+ adicionar favorito", acc, Color(0xFF0A0A0A), cfg.rr(16f), Modifier.fillMaxWidth()) { onAdd() }
     }
 }
 
@@ -374,7 +548,7 @@ fun BoxScope.EditBar(cfg: Config, onDone: () -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             T("MODO EDIÇÃO", 13f, color = acc, weight = 800, letter = 2f, face = "mono")
-            T("↑↓ move · ⇔ alinha · −+ tamanho · ◼ esconde", 11f, color = DIM)
+            T("segure e arraste pra mover · ⇔ alinha · −+ tamanho · ◼ esconde", 11f, color = DIM, wrap = true)
         }
         SqBtn("Concluir", acc, shape = cfg.rr(14f)) { onDone() }
     }
@@ -558,20 +732,20 @@ fun BoxScope.LetterBubble(cfg: Config, letter: String, fingerY: Float, screenH: 
     val acc = Color(Accent.current(cfg))
     val left = cfg.azSide == "left"
     val d = LocalDensity.current
-    val size = 68.dp
+    val size = 50.dp
     val minY = with(d) { (statusTop + 8.dp).toPx() }
     val maxY = with(d) { (screenH - size - 40.dp).toPx() }
     val y = (fingerY - with(d) { (size / 2).toPx() }).coerceIn(minY, maxY.coerceAtLeast(minY))
     Box(
         Modifier.align(if (left) Alignment.TopStart else Alignment.TopEnd)
-            .padding(start = if (left) 92.dp else 0.dp, end = if (left) 0.dp else 92.dp)
+            .padding(start = if (left) 84.dp else 0.dp, end = if (left) 0.dp else 84.dp)
             .offset { IntOffset(0, y.roundToInt()) }
-            .size(size).clip(cfg.rr(26f)).background(acc),
+            .size(size).clip(cfg.rr(18f)).background(acc),
         contentAlignment = Alignment.Center,
     ) {
         val isLetter = letter.length == 1 && letter[0] in 'A'..'Z'
-        if (cfg.theme == "runa" && isLetter) T(runeOf(letter), 32f, color = Color(0xFF0A0A0A), weight = 900, face = "runic", shadow = false)
-        else T(letter, 32f, color = Color(0xFF0A0A0A), weight = 800, face = "mono", shadow = false)
+        if (cfg.theme == "runa" && isLetter) T(runeOf(letter), 24f, color = Color(0xFF0A0A0A), weight = 900, face = "runic", shadow = false)
+        else T(letter, 24f, color = Color(0xFF0A0A0A), weight = 800, face = "mono", shadow = false)
     }
 }
 
@@ -580,7 +754,7 @@ fun BoxScope.LetterBubble(cfg: Config, letter: String, fingerY: Float, screenH: 
 @Composable
 fun SearchOverlay(
     cfg: Config, apps: List<AppInfo>, notifPkgs: Set<String>,
-    onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit, onClose: () -> Unit,
+    onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit, title: String = "", onClose: () -> Unit,
 ) {
     var q by remember { mutableStateOf("") }
     val fr = remember { FocusRequester() }
@@ -591,15 +765,17 @@ fun SearchOverlay(
     val showHidden = qq == "oculto" || qq == "ᛟ"
     val res = when {
         showHidden -> apps.filter { it.key in cfg.hidden }
+        qq.isEmpty() && title.isNotEmpty() -> apps.filter { it.key !in cfg.hidden }
         qq.isEmpty() -> emptyList()
         else -> apps.filter { it.key !in cfg.hidden && norm(it.label).contains(norm(qq)) }
-    }.take(12)
+    }.take(if (title.isNotEmpty()) 400 else 12)
     val conta = calc(qq)
     Box(Modifier.fillMaxSize().background(Color(0xB3000000)).clickable(remember { MutableInteractionSource() }, null) { onClose() }) {
         Column(
             Modifier.fillMaxWidth().statusBarsPadding().imePadding().padding(horizontal = 22.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (title.isNotEmpty()) T(title.uppercase(), 11f, color = acc, weight = 700, letter = 2f, face = "mono")
             BasicTextField(
                 q, { q = it },
                 Modifier.fillMaxWidth().focusRequester(fr).clip(cfg.rr(24f)).border(1.5.dp, acc, cfg.rr(24f))
@@ -617,7 +793,9 @@ fun SearchOverlay(
             )
             if (conta != null) T("= $conta", 34f, color = acc, weight = 700)
             if (showHidden) T("ᛟ APPS OCULTOS", 11f, color = DIM, letter = 2f, face = "mono")
-            res.forEach { AppRowItem(it, cfg, it.pkg in notifPkgs, onApp, onLong) }
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                res.forEach { AppRowItem(it, cfg, it.pkg in notifPkgs, onApp, onLong) }
+            }
             if (qq.isNotEmpty() && res.isEmpty() && conta == null) T("nada encontrado", 15f, color = DIM)
         }
     }
@@ -647,7 +825,7 @@ fun setAppMode(key: String, mode: String?) = Store.update { c ->
 }
 
 @Composable
-fun BoxScope.AppMenu(app: AppInfo, cfg: Config, onClose: () -> Unit) {
+fun BoxScope.AppMenu(app: AppInfo, cfg: Config, onEdit: () -> Unit, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val t = tok(cfg)
     val fav = app.key in cfg.favs
@@ -669,11 +847,7 @@ fun BoxScope.AppMenu(app: AppInfo, cfg: Config, onClose: () -> Unit) {
         MBtn(if (fav) "Tirar dos favoritos" else "Pôr nos favoritos") {
             Store.update { c -> c.copy(favs = if (fav) c.favs - app.key else c.favs + app.key) }; onClose()
         }
-        if (fav) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val i = cfg.favs.indexOf(app.key)
-            MBtn("↑ Subir", Modifier.weight(1f)) { Store.update { c -> c.copy(favs = c.favs.swap(i, i - 1)) } }
-            MBtn("↓ Descer", Modifier.weight(1f)) { Store.update { c -> c.copy(favs = c.favs.swap(i, i + 1)) } }
-        }
+        if (fav) MBtn("Editar favoritos (arrastar, tirar, adicionar)") { onEdit() }
         MBtn(if (hid) "Mostrar de novo" else "Ocultar app") {
             Store.update { c -> c.copy(hidden = if (hid) c.hidden - app.key else c.hidden + app.key) }; onClose()
         }

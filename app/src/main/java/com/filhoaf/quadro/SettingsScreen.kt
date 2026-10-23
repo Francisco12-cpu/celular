@@ -240,13 +240,16 @@ fun VisualTab(cfg: Config) {
             Store.update { it.copy(align = it.align + ("favs" to v)) }
         }
         SwitchRow("Letras minúsculas", cfg.lowercase) { v -> Store.update { it.copy(lowercase = v) } }
-        SliderRow("Tamanho da letra", cfg.fontSize, 14f..40f, shown = "${cfg.fontSize.roundToInt()}") { v -> Store.update { it.copy(fontSize = v) } }
+        SliderRow("Tamanho da letra", cfg.fontSize, 12f..40f, shown = "${cfg.fontSize.roundToInt()}") { v -> Store.update { it.copy(fontSize = v) } }
         SliderRow("Peso da letra", cfg.fontWeight.toFloat(), 100f..900f, steps = 7, shown = "${cfg.fontWeight}") { v ->
             Store.update { it.copy(fontWeight = ((v / 100).roundToInt() * 100).coerceIn(100, 900)) }
         }
-        SliderRow("Tamanho do ícone", cfg.iconSize, 24f..72f, shown = "${cfg.iconSize.roundToInt()} dp") { v -> Store.update { it.copy(iconSize = v) } }
-        SliderRow("Altura dos favoritos", cfg.favBottom, 24f..360f, shown = "${cfg.favBottom.roundToInt()} dp da base") { v -> Store.update { it.copy(favBottom = v) } }
-        Hint("Quanto maior a altura dos favoritos, mais pra cima a lista fica. Arrastar a lista pra cima abre todos os apps.")
+        SliderRow("Tamanho do ícone", cfg.iconSize, 18f..72f, shown = "${cfg.iconSize.roundToInt()} dp") { v -> Store.update { it.copy(iconSize = v) } }
+        Chips(listOf("top" to "Favoritos logo abaixo do topo", "bottom" to "Favoritos embaixo"), cfg.favAnchor) { v -> Store.update { it.copy(favAnchor = v) } }
+        SliderRow("Espaço entre o topo e os favoritos", cfg.favGap, 0f..240f, shown = "${cfg.favGap.roundToInt()} dp") { v -> Store.update { it.copy(favGap = v) } }
+        if (cfg.favAnchor == "bottom") SliderRow("Distância da base", cfg.favBottom, 24f..360f, shown = "${cfg.favBottom.roundToInt()} dp") { v -> Store.update { it.copy(favBottom = v) } }
+        SliderRow("Espaço entre relógio, data e treino", cfg.blockGap, 0f..48f, shown = "${cfg.blockGap.roundToInt()} dp") { v -> Store.update { it.copy(blockGap = v) } }
+        Hint("Arrastar a lista pra cima mostra todos os apps. Segure 1 segundo no relógio pra editar a tela.")
     }
     Section("Barra de letras") {
         Chips(listOf("right" to "Direita", "left" to "Esquerda"), cfg.azSide) { v -> Store.update { it.copy(azSide = v) } }
@@ -383,7 +386,8 @@ fun BuddyTab(cfg: Config) {
 @Composable
 fun ScreenTab(cfg: Config, onEdit: () -> Unit) {
     Section("Organizar") {
-        MBtn("Editar a tela (mover, alinhar, tamanho)") { onEdit() }
+        MBtn("Editar a tela e os favoritos") { onEdit() }
+        Hint("Atalho: segure 1 segundo em cima do relógio.")
         Hint("Os favoritos ficam sempre na parte de baixo. A posição deles é ajustável na aba Visual.")
     }
     Section("Blocos do topo") {

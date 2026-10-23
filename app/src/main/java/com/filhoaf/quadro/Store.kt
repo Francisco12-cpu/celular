@@ -15,20 +15,23 @@ data class Rule(val who: String, val face: String, val msg: String)
 /** Blocos que ficam no topo da tela inicial. A lista de favoritos é sempre a parte de baixo. */
 val TOP_BLOCKS = listOf("clock", "buddy", "date", "treino")
 
-const val CFG_VERSION = 2
+const val CFG_VERSION = 3
 
 data class Config(
     // visual
     val theme: String = "minimal",          // minimal | tech | runa
     val labelMode: String = "icon_name",    // icon_name | name | icon | name_icon
-    val fontSize: Float = 26f,
+    val fontSize: Float = 21f,
     val fontWeight: Int = 300,
     val lowercase: Boolean = true,
-    val iconSize: Float = 40f,
+    val iconSize: Float = 30f,
     val azSide: String = "right",
     val corner: Int = 22,                    // 0 = quadrado, 50 = redondo
     val uiStyle: String = "suave",           // suave | contorno (painéis de ajustes)
     val favBottom: Float = 120f,             // distância dos favoritos até o fim da tela (dp)
+    val favAnchor: String = "top",           // top = logo abaixo do relógio | bottom = embaixo
+    val favGap: Float = 28f,                 // espaço entre o topo e os favoritos (dp)
+    val blockGap: Float = 12f,               // espaço entre os blocos do topo (dp)
     // ícones
     val iconMode: String = "orig",
     val colorSource: String = "wall",        // wall | custom
@@ -91,7 +94,7 @@ object Store {
         put("theme", c.theme); put("labelMode", c.labelMode); put("fontSize", c.fontSize.toDouble())
         put("fontWeight", c.fontWeight); put("lowercase", c.lowercase); put("iconSize", c.iconSize.toDouble())
         put("azSide", c.azSide); put("corner", c.corner); put("uiStyle", c.uiStyle)
-        put("favBottom", c.favBottom.toDouble())
+        put("favBottom", c.favBottom.toDouble()); put("favAnchor", c.favAnchor); put("favGap", c.favGap.toDouble()); put("blockGap", c.blockGap.toDouble())
         put("iconMode", c.iconMode); put("colorSource", c.colorSource)
         put("customColor", c.customColor); put("perApp", JSONObject(c.perApp as Map<*, *>))
         put("favs", JSONArray(c.favs)); put("hidden", JSONArray(c.hidden))
@@ -136,6 +139,7 @@ object Store {
             iconSize = if (old) d.iconSize else flt("iconSize", d.iconSize),
             azSide = str("azSide", d.azSide), corner = o.optInt("corner", d.corner).coerceIn(0, 50),
             uiStyle = str("uiStyle", d.uiStyle), favBottom = flt("favBottom", d.favBottom),
+            favAnchor = str("favAnchor", d.favAnchor), favGap = flt("favGap", d.favGap), blockGap = flt("blockGap", d.blockGap),
             iconMode = str("iconMode", d.iconMode),
             colorSource = str("colorSource", d.colorSource), customColor = o.optInt("customColor", d.customColor),
             perApp = smap("perApp"), favs = list("favs", d.favs), hidden = list("hidden", d.hidden),
