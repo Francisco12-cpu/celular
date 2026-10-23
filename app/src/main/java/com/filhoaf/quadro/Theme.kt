@@ -37,6 +37,7 @@ const val RUNES = "ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃᛇᛈᛉᛊᛏᛒᛖᛗ�
 fun runeOf(s: String): String = RUNES[(s.firstOrNull()?.code ?: 0) % RUNES.length].toString()
 
 /** Fontes embutidas (variáveis, então o peso funciona de verdade). */
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
 object Fonts {
     private val cache = HashMap<String, FontFamily>()
 
