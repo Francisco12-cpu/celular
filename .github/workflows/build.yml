@@ -24,7 +24,33 @@ jobs:
           gradle-version: "8.7"
 
       - name: Compilar
-        run: gradle assembleRelease --no-daemon
+        id: build
+        continue-on-error: true
+        run: gradle assembleRelease --no-daemon --console=plain > build.log 2>&1
+
+      - name: Guardar resumo do build na branch buildlog
+        if: always()
+        run: |
+          mkdir -p /tmp/lg
+          {
+            echo "run=${{ github.run_number }} sha=${{ github.sha }} resultado=${{ steps.build.outcome }}"
+            echo "----- erros -----"
+            grep -E "^e: |error:|What went wrong|FAILED|Execution failed|Could not " build.log | head -80 || true
+            echo "----- fim do log -----"
+            tail -40 build.log
+          } > /tmp/lg/erros.txt
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan buildlog-tmp
+          git rm -rf . -q
+          cp /tmp/lg/erros.txt erros.txt
+          git add erros.txt
+          git commit -q -m "log do build ${{ github.run_number }}"
+          git push -f origin HEAD:buildlog
+
+      - name: Falhar se a compilação falhou
+        if: steps.build.outcome == 'failure'
+        run: exit 1
 
       - name: Renomear APK
         run: cp app/build/outputs/apk/release/app-release.apk QUADRO-v${{ github.run_number }}.apk
