@@ -9,7 +9,7 @@ import android.os.BatteryManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -20,28 +20,24 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,58 +49,64 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
-val INK = Color(0xFFF3F5F4)
-val DIM = Color(0xB8F3F5F4)
-private val SH = Shadow(Color(0x99000000), Offset(0f, 2f), 8f)
-const val RUNES = "ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃᛇᛈᛉᛊᛏᛒᛖᛗᛚᛜᛞᛟ"
+/* =================== LISTA ÚNICA: favoritos + todos os apps =================== */
+
+sealed class LI(val key: String) {
+    object Gap : LI("gap")
+    class Fav(val app: AppInfo) : LI("f:" + app.key)
+    class Label(val text: String, val letter: String?, id: Int) : LI("l:$id")
+    class App(val app: AppInfo) : LI("a:" + app.key)
+}
+
+class Built(val items: List<LI>, val letterIdx: Map<String, Int>, val favCount: Int)
+
+fun buildItems(apps: List<AppInfo>, cfg: Config): Built {
+    val hidden = cfg.hidden.toSet()
+    val vis = apps.filter { it.key !in hidden }
+        .sortedWith(compareBy({ if (it.letter == "#") "~" else it.letter }, { norm(it.label) }))
+    val favs = cfg.favs.mapNotNull { k -> vis.firstOrNull { it.key == k } }
+    val out = ArrayList<LI>()
+    val idx = HashMap<String, Int>()
+    out.add(LI.Gap)
+    favs.forEach { out.add(LI.Fav(it)) }
+    out.add(LI.Label("todos os apps", null, out.size))
+    var last = ""
+    vis.forEach { a ->
+        if (a.letter != last) {
+            last = a.letter
+            if (!idx.containsKey(last)) idx[last] = out.size
+            out.add(LI.Label(last, last, out.size))
+        }
+        out.add(LI.App(a))
+    }
+    return Built(out, idx, favs.size)
+}
+
+fun rowHeight(cfg: Config): Float {
+    val icon = if (cfg.labelMode == "name") 0f else cfg.iconSize + 16f
+    return maxOf(icon, cfg.fontSize * 2f, 48f)
+}
+
 val AZ: List<String> = listOf("◎") + ('A'..'Z').map { it.toString() } + listOf("#", "⚙")
 
-fun themeFont(t: String): FontFamily = when (t) {
-    "tech" -> FontFamily.Monospace
-    "runa" -> FontFamily.Serif
-    else -> FontFamily.SansSerif
-}
-
-fun runeOf(s: String): String = RUNES[(s.firstOrNull()?.code ?: 0) % RUNES.length].toString()
-
-@Composable
-fun T(
-    text: String, size: Float, modifier: Modifier = Modifier, color: Color = INK, weight: Int = 400,
-    family: FontFamily = FontFamily.SansSerif, shadow: Boolean = true, lineHeight: Float = 0f,
-    align: TextAlign = TextAlign.Start, letter: Float = 0f,
-) {
-    BasicText(
-        text, modifier,
-        style = TextStyle(
-            color = color, fontSize = size.sp, fontWeight = FontWeight(weight.coerceIn(1, 1000)),
-            fontFamily = family, shadow = if (shadow) SH else null,
-            lineHeight = if (lineHeight > 0f) lineHeight.sp else TextUnit.Unspecified,
-            textAlign = align, letterSpacing = letter.sp,
-        ),
-    )
-}
-
-fun startSafe(ctx: Context, i: Intent) {
-    try { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
-}
+val BLOCK_NAMES = mapOf(
+    "clock" to "Relógio", "buddy" to "Amiguinho", "date" to "Data e semana", "treino" to "Treino do dia",
+)
 
 /* =================== APP PRINCIPAL =================== */
 
@@ -116,26 +118,42 @@ fun QuadroApp(homeTick: Int) {
     val notifs by NotifCenter.items.collectAsState()
     val notifPkgs = remember(notifs) { notifs.map { it.pkg }.toSet() }
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
     var editing by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf(false) }
     var menuApp by remember { mutableStateOf<AppInfo?>(null) }
-    var panelLetter by remember { mutableStateOf<String?>(null) }
-    var dragIdx by remember { mutableIntStateOf(-1) }
+    var barIdx by remember { mutableIntStateOf(-1) }
     var fingerY by remember { mutableFloatStateOf(0f) }
+    var barShown by remember { mutableStateOf(false) }
+    var topH by remember { mutableIntStateOf(0) }
 
-    fun closeAll() { editing = false; settings = false; search = false; menuApp = null; panelLetter = null }
-    LaunchedEffect(homeTick) { closeAll() }
-    BackHandler {
+    val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
+    val scrolling = listState.isScrollInProgress
+
+    fun closeAll() { editing = false; settings = false; search = false; menuApp = null; barIdx = -1 }
+    LaunchedEffect(homeTick) {
+        closeAll()
+        listState.animateScrollToItem(0)
+    }
+    BackHandler(enabled = menuApp != null || settings || search || editing || !atTop) {
         when {
             menuApp != null -> menuApp = null
             settings -> settings = false
             search -> search = false
-            panelLetter != null -> panelLetter = null
             editing -> editing = false
+            else -> scope.launch { listState.animateScrollToItem(0) }
         }
     }
+
+    // A barra de letras só aparece enquanto você rola ou toca na borda
+    LaunchedEffect(scrolling, barIdx) {
+        if (scrolling || barIdx >= 0) barShown = true else { delay(1300); barShown = false }
+    }
+    val barVisible = barShown && (!atTop || barIdx >= 0)
 
     // bateria pro amiguinho
     var batt by remember { mutableIntStateOf(100) }
@@ -167,68 +185,135 @@ fun QuadroApp(homeTick: Int) {
         }
     }
 
-    val visible = apps.filter { it.key !in cfg.hidden }
-    val onApp: (AppInfo) -> Unit = { a -> Apps.launch(ctx, a); panelLetter = null; search = false }
-    val onLong: (AppInfo) -> Unit = { a -> haptic.performHapticFeedback(HapticFeedbackType.LongPress); menuApp = a }
-    val canEdit by rememberUpdatedState(dragIdx < 0 && panelLetter == null && !settings && !search)
+    val built = remember(apps, cfg.favs, cfg.hidden) { buildItems(apps, cfg) }
 
-    Box(
-        Modifier.fillMaxSize().pointerInput(Unit) {
-            detectTapGestures(onLongPress = {
-                if (canEdit) { editing = true; haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
-            })
-        },
-    ) {
-        // leve escurecimento só nas bordas, o papel de parede continua aparecendo
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x59000000), Color(0x00000000), Color(0x00000000), Color(0x66000000)))))
+    val onApp: (AppInfo) -> Unit = { a ->
+        Apps.launch(ctx, a)
+        search = false
+        scope.launch { listState.scrollToItem(0) }
+    }
+    val onLong: (AppInfo) -> Unit = { a ->
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        menuApp = a
+    }
 
-        HomeScreen(cfg, apps, notifPkgs, notifs, batt, charging, editing, onApp, onLong)
+    fun targetFor(i: Int): Int? {
+        for (j in i..27) {
+            val l = AZ[j]
+            built.letterIdx[l]?.let { return it }
+        }
+        return null
+    }
 
-        if (panelLetter != null || dragIdx >= 0) {
-            LetterPanel(cfg, visible, panelLetter, dragIdx, fingerY, notifPkgs, onApp, onLong) { panelLetter = null }
+    val onBarTouch: (Int, Float) -> Unit = { i, y ->
+        if (i != barIdx) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        barIdx = i
+        fingerY = y
+        if (i in 1..27) {
+            val target = targetFor(i) ?: built.items.lastIndex
+            scope.launch { listState.scrollToItem(target) }
+        }
+    }
+    val onBarRelease: (Int) -> Unit = { i ->
+        barIdx = -1
+        when (AZ[i]) {
+            "◎" -> search = true
+            "⚙" -> settings = true
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val screenH = maxHeight
+        val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val rh = rowHeight(cfg).dp
+        val favsH = rh * built.favCount
+        val topDp = with(density) { topH.toDp() }
+        // espaço vazio no começo da lista: empurra os favoritos pra baixo, sem nunca encostar no relógio
+        val gapDp: Dp = maxOf(screenH - cfg.favBottom.dp - favsH - statusTop, topDp - statusTop + 24.dp)
+        val gapPx = with(density) { gapDp.toPx() }.coerceAtLeast(1f)
+        val progress = remember(gapPx) {
+            derivedStateOf {
+                if (listState.firstVisibleItemIndex > 0) 1f
+                else (listState.firstVisibleItemScrollOffset / gapPx).coerceIn(0f, 1f)
+            }
+        }
+        val left = cfg.azSide == "left"
+        val al = cfg.align["favs"] ?: "left"
+        val acc = Color(Accent.current(cfg))
+
+        // escurece o fundo conforme a lista sobe, o papel de parede continua aparecendo
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(Color(0x66000000), Color(0x00000000), Color(0x00000000), Color(0x59000000))),
+            ),
+        )
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = progress.value * 0.9f }.background(Color(0xFF0C0B18)))
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = !editing,
+            contentPadding = PaddingValues(
+                start = if (left) 62.dp else 22.dp, end = if (left) 22.dp else 62.dp,
+                top = statusTop, bottom = navBottom + 96.dp,
+            ),
+        ) {
+            items(built.items, key = { it.key }) { item ->
+                when (item) {
+                    LI.Gap -> Spacer(Modifier.height(gapDp))
+                    is LI.Fav -> AppRowItem(item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong)
+                    is LI.App -> AppRowItem(item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong)
+                    is LI.Label -> {
+                        val lt: String? = item.letter
+                        val txt: String = if (lt == null) item.text.uppercase()
+                        else if (cfg.theme == "runa" && lt != "#") runeOf(lt) + "  " + lt
+                        else lt
+                        Box(
+                            Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 22.dp, bottom = 4.dp),
+                            contentAlignment = when (al) { "center" -> Alignment.Center; "right" -> Alignment.CenterEnd; else -> Alignment.CenterStart },
+                        ) {
+                            T(txt, 12f, color = if (lt == null) DIM else acc, weight = 700, face = "mono", letter = 3f)
+                        }
+                    }
+                }
+            }
         }
 
-        AlphaBar(
-            cfg, dragIdx,
-            onTouch = { i, y ->
-                if (i != dragIdx) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                dragIdx = i; fingerY = y
-                val l = AZ[i]
-                if (l != "◎" && l != "⚙") panelLetter = l
-            },
-            onRelease = { i ->
-                dragIdx = -1
-                when (AZ[i]) {
-                    "◎" -> { panelLetter = null; search = true }
-                    "⚙" -> { panelLetter = null; settings = true }
-                }
-            },
+        // relógio e blocos do topo: somem conforme a lista sobe
+        TopBlocks(
+            cfg, notifs, batt, charging, editing,
+            Modifier.onSizeChanged { topH = it.height }
+                .graphicsLayer { alpha = if (editing) 1f else (1f - progress.value * 1.8f).coerceIn(0f, 1f); translationY = if (editing) 0f else -progress.value * 90f },
         )
+
+        AlphaBar(cfg, barVisible, barIdx, built.letterIdx.keys, onBarTouch, onBarRelease)
+        if (barIdx >= 0) LetterBubble(cfg, AZ[barIdx], fingerY, screenH, statusTop)
 
         if (search) SearchOverlay(cfg, apps, notifPkgs, onApp, onLong) { search = false }
         if (editing) EditBar(cfg) { editing = false }
         menuApp?.let { a -> AppMenu(a, cfg) { menuApp = null } }
-        if (settings) SettingsScreen(onClose = { settings = false }, onEdit = { settings = false; editing = true })
+        if (settings) SettingsScreen(
+            onClose = { settings = false },
+            onEdit = { settings = false; editing = true; scope.launch { listState.scrollToItem(0) } },
+        )
     }
 }
 
-/* =================== TELA INICIAL =================== */
+/* =================== BLOCOS DO TOPO =================== */
 
 @Composable
-fun HomeScreen(
-    cfg: Config, apps: List<AppInfo>, notifPkgs: Set<String>, notifs: List<Notif>,
-    batt: Int, charging: Boolean, editing: Boolean, onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit,
-) {
+fun TopBlocks(cfg: Config, notifs: List<Notif>, batt: Int, charging: Boolean, editing: Boolean, modifier: Modifier) {
     val left = cfg.azSide == "left"
+    val shown = cfg.order.withIndex().filter { (_, k) ->
+        val skip = k == "buddy" && (!cfg.buddyOn || cfg.buddyInline)
+        !skip && (k !in cfg.hiddenBlocks || editing)
+    }
     Column(
-        Modifier.fillMaxSize().systemBarsPadding()
-            .padding(start = if (left) 54.dp else 26.dp, end = if (left) 26.dp else 54.dp, top = if (editing) 70.dp else 30.dp, bottom = 26.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        modifier.fillMaxWidth().statusBarsPadding()
+            .padding(start = if (left) 66.dp else 32.dp, end = 26.dp, top = if (editing) 76.dp else 26.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        val shown = cfg.order.withIndex().filter { (_, k) ->
-            val skip = k == "buddy" && (!cfg.buddyOn || cfg.buddyInline)
-            !skip && (k !in cfg.hiddenBlocks || editing)
-        }
         for ((i, k) in shown) {
             val hid = k in cfg.hiddenBlocks
             val s = cfg.scale[k] ?: 1f
@@ -237,68 +322,46 @@ fun HomeScreen(
                 "right" -> Alignment.End
                 else -> Alignment.Start
             }
-            val base = if (k == "spacer") Modifier.weight(1f).fillMaxWidth() else Modifier.fillMaxWidth()
             Column(
-                base.alpha(if (hid) 0.35f else 1f)
-                    .then(if (editing) Modifier.border(1.dp, Color(0x88FFFFFF)).padding(8.dp) else Modifier),
+                Modifier.fillMaxWidth().graphicsLayer { alpha = if (hid) 0.35f else 1f }
+                    .then(if (editing) Modifier.border(1.dp, Color(0x99FFFFFF), cfg.rr(14f)).padding(8.dp) else Modifier),
                 horizontalAlignment = al,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (editing) EditTools(k, i, cfg)
                 when (k) {
-                    "clock" -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        ClockView(cfg, s, notifs.size)
-                        if (cfg.buddyOn && cfg.buddyInline) BuddyView(cfg, s, notifs, batt, charging)
+                    "clock" -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Box(Modifier.weight(1f, fill = false)) { ClockView(cfg, s, notifs.size) }
+                        if (cfg.buddyOn && cfg.buddyInline) BuddyView(cfg, s, notifs, batt, charging, stacked = true)
                     }
-                    "buddy" -> BuddyView(cfg, s, notifs, batt, charging)
+                    "buddy" -> BuddyView(cfg, s, notifs, batt, charging, stacked = false)
                     "date" -> DateView(cfg, s)
                     "treino" -> TreinoView(cfg, s)
-                    "favs" -> FavsView(cfg, apps, notifPkgs, s, al, onApp, onLong)
-                    "spacer" -> if (editing) T("espaço livre", 12f, color = DIM)
                 }
             }
         }
     }
 }
 
-val BLOCK_NAMES = mapOf(
-    "clock" to "Relógio", "buddy" to "Amiguinho", "date" to "Data e semana",
-    "treino" to "Treino do dia", "spacer" to "Espaço livre", "favs" to "Apps favoritos",
-)
-
-@Composable
-fun SqBtn(label: String, bg: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(
-        modifier.defaultMinSize(36.dp, 36.dp).background(bg).clickable(onClick = onClick).padding(horizontal = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) { T(label, 14f, color = Color(0xFF0A0A0A), weight = 800, shadow = false) }
-}
-
 @Composable
 fun EditTools(k: String, i: Int, cfg: Config) {
     val acc = Color(Accent.current(cfg))
+    val sh = cfg.rr(12f)
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        T(BLOCK_NAMES[k] ?: k, 11f, color = acc, weight = 700, letter = 1f)
+        T(BLOCK_NAMES[k] ?: k, 11f, color = acc, weight = 700, letter = 1f, face = "mono")
         Spacer(Modifier.width(4.dp))
-        SqBtn("↑", acc) { Store.update { c -> c.copy(order = c.order.swap(i, i - 1)) } }
-        SqBtn("↓", acc) { Store.update { c -> c.copy(order = c.order.swap(i, i + 1)) } }
-        SqBtn("⇔", acc) {
+        SqBtn("↑", acc, shape = sh) { Store.update { c -> c.copy(order = c.order.swap(i, i - 1)) } }
+        SqBtn("↓", acc, shape = sh) { Store.update { c -> c.copy(order = c.order.swap(i, i + 1)) } }
+        SqBtn("⇔", acc, shape = sh) {
             val o = listOf("left", "center", "right")
             Store.update { c -> c.copy(align = c.align + (k to o[(o.indexOf(c.align[k] ?: "left") + 1) % 3])) }
         }
-        if (k != "spacer") {
-            SqBtn("−", acc) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) - 0.1f).coerceAtLeast(0.5f))) } }
-            SqBtn("+", acc) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) + 0.1f).coerceAtMost(2.2f))) } }
-        }
-        SqBtn(if (k in cfg.hiddenBlocks) "◻" else "◼", acc) {
+        SqBtn("−", acc, shape = sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) - 0.1f).coerceAtLeast(0.5f))) } }
+        SqBtn("+", acc, shape = sh) { Store.update { c -> c.copy(scale = c.scale + (k to ((c.scale[k] ?: 1f) + 0.1f).coerceAtMost(2.2f))) } }
+        SqBtn(if (k in cfg.hiddenBlocks) "◻" else "◼", acc, shape = sh) {
             Store.update { c -> c.copy(hiddenBlocks = if (k in c.hiddenBlocks) c.hiddenBlocks - k else c.hiddenBlocks + k) }
         }
     }
-}
-
-fun List<String>.swap(a: Int, b: Int): List<String> {
-    if (b < 0 || b >= size) return this
-    val m = toMutableList(); val t = m[a]; m[a] = m[b]; m[b] = t; return m
 }
 
 @Composable
@@ -310,63 +373,10 @@ fun BoxScope.EditBar(cfg: Config, onDone: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            T("MODO EDIÇÃO", 13f, color = acc, weight = 800, letter = 2f)
+            T("MODO EDIÇÃO", 13f, color = acc, weight = 800, letter = 2f, face = "mono")
             T("↑↓ move · ⇔ alinha · −+ tamanho · ◼ esconde", 11f, color = DIM)
         }
-        SqBtn("Concluir", acc) { onDone() }
-    }
-}
-
-/* =================== BLOCOS =================== */
-
-@Composable
-fun FavsView(
-    cfg: Config, apps: List<AppInfo>, notifPkgs: Set<String>, s: Float, al: Alignment.Horizontal,
-    onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit,
-) {
-    val fav = cfg.favs.mapNotNull { k -> apps.firstOrNull { it.key == k } }.filter { it.key !in cfg.hidden }
-    Column(horizontalAlignment = al, verticalArrangement = Arrangement.spacedBy((11 * s).dp)) {
-        fav.forEach { AppRow(it, cfg, s, it.pkg in notifPkgs, onApp, onLong) }
-        if (fav.isEmpty() && apps.isNotEmpty()) T("deslize na barra de letras, segure um app → Favoritar", 13f, color = DIM)
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun AppRow(app: AppInfo, cfg: Config, s: Float, dot: Boolean, onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit) {
-    val fam = themeFont(cfg.theme)
-    var label = if (cfg.lowercase) app.label.lowercase() else app.label
-    if (cfg.theme == "tech") label = "> $label"
-    val mode = cfg.labelMode
-    val acc = Color(Accent.current(cfg))
-    val ic = cfg.iconSize * s
-    Row(
-        Modifier.combinedClickable(
-            interactionSource = remember { MutableInteractionSource() }, indication = null,
-            onClick = { onApp(app) }, onLongClick = { onLong(app) },
-        ).padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (mode == "icon_name" || mode == "icon") AppIcon(app, ic, cfg)
-        if (mode != "icon") T(label, cfg.fontSize * s, weight = cfg.fontWeight, family = fam)
-        if (cfg.theme == "runa" && mode != "icon") T(runeOf(app.label), cfg.fontSize * s * 0.8f, color = acc, family = FontFamily.Serif)
-        if (mode == "name_icon") AppIcon(app, ic, cfg)
-        if (dot) Box(Modifier.size(7.dp).background(acc))
-    }
-}
-
-@Composable
-fun AppIcon(app: AppInfo, sizeDp: Float, cfg: Config) {
-    val ctx = LocalContext.current
-    val mode = cfg.perApp[app.key] ?: cfg.iconMode
-    val accent = Accent.current(cfg)
-    val px = with(LocalDensity.current) { sizeDp.dp.roundToPx() }.coerceIn(48, 192)
-    val img by produceState<ImageBitmap?>(null, app.key, mode, accent, px) {
-        value = IconCache.get(ctx, app, mode, accent, px)
-    }
-    Box(Modifier.size(sizeDp.dp).background(Color(0x33000000))) {
-        img?.let { Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
+        SqBtn("Concluir", acc, shape = cfg.rr(14f)) { onDone() }
     }
 }
 
@@ -375,7 +385,7 @@ fun DateView(cfg: Config, s: Float) {
     val c = Calendar.getInstance().apply { firstDayOfWeek = Calendar.MONDAY; minimalDaysInFirstWeek = 4 }
     val d = SimpleDateFormat("EEEE, d 'de' MMMM", Locale("pt", "BR")).format(c.time)
     val pre = if (cfg.theme == "runa") "ᛞ " else if (cfg.theme == "tech") "// " else ""
-    T("$pre$d · semana ${c.get(Calendar.WEEK_OF_YEAR)}", 14f * s, color = DIM, family = themeFont(cfg.theme), letter = 0.3f)
+    T("$pre$d · semana ${c.get(Calendar.WEEK_OF_YEAR)}", 14f * s, color = DIM, face = themeFace(cfg.theme), letter = 0.3f)
 }
 
 @Composable
@@ -384,7 +394,7 @@ fun TreinoView(cfg: Config, s: Float) {
     val t = cfg.treino.getOrElse(day) { "" }.ifBlank { "Descanso" }
     Column {
         T(if (cfg.theme == "runa") "ᛏ TREINO DE HOJE" else "TREINO DE HOJE", 10f * s, color = DIM, weight = 600, letter = 2f)
-        T(t, 17f * s, family = themeFont(cfg.theme), weight = 500)
+        T(t, 17f * s, face = themeFace(cfg.theme), weight = 500)
     }
 }
 
@@ -394,7 +404,7 @@ val HAPPY = listOf("(^‿^)", "(＾▽＾)", "(•̀ᴗ•́)و", "(¬‿¬)", "
 val FACES = listOf("(♥‿♥)", "(^o^)/", "(⊙_⊙)", "(ง •̀_•́)ง", "(｡•́︿•̀｡)", "(⌐■_■)", "(☆▽☆)")
 
 @Composable
-fun BuddyView(cfg: Config, s: Float, notifs: List<Notif>, batt: Int, charging: Boolean) {
+fun BuddyView(cfg: Config, s: Float, notifs: List<Notif>, batt: Int, charging: Boolean, stacked: Boolean) {
     var temp by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(temp) { if (temp != null) { delay(2500); temp = null } }
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -412,147 +422,95 @@ fun BuddyView(cfg: Config, s: Float, notifs: List<Notif>, batt: Int, charging: B
         notifs.isNotEmpty() -> "(•o•)!" to (if (notifs.size == 1) "1 notificação" else "${notifs.size} notificações")
         else -> "(•‿•)" to ""
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val faceBox: @Composable () -> Unit = {
         Box(
-            Modifier.border(1.5.dp, INK)
+            Modifier.border(1.5.dp, INK, cfg.rr(12f))
+                .clip(cfg.rr(12f))
                 .clickable(remember { MutableInteractionSource() }, null) { temp = HAPPY.random() }
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        ) { T(face, 19f * s, family = FontFamily.Monospace) }
-        if (msg.isNotEmpty()) T(msg, 12f * s, color = DIM, modifier = Modifier.widthIn(max = 170.dp))
+                .padding(horizontal = 9.dp, vertical = 5.dp),
+        ) { T(face, 19f * s, face = "mono") }
+    }
+    if (stacked) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            faceBox()
+            if (msg.isNotEmpty()) T(msg, 11f * s, color = DIM, wrap = true, maxLines = 2, align = TextAlign.Center, modifier = Modifier.widthIn(max = 110.dp))
+        }
+    } else {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            faceBox()
+            if (msg.isNotEmpty()) T(msg, 13f * s, color = DIM, wrap = true, modifier = Modifier.widthIn(max = 200.dp))
+        }
     }
 }
 
-/* =================== RELÓGIOS =================== */
+/* =================== LINHAS DE APP (a linha inteira é clicável) =================== */
 
-val CLOCKS = listOf(
-    "digital" to "Digital", "segundos" to "Com segundos", "gigante" to "Gigante", "bloco" to "Blocos",
-    "elastico" to "Elástico", "vertical" to "Empilhado", "texto" to "Por extenso", "binario" to "Binário",
-    "terminal" to "Terminal", "runico" to "Rúnico", "fino" to "Fino", "barras" to "Barras do dia",
-    "analogico" to "Analógico quadrado",
-)
-
-private val UNI = listOf("", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze",
-    "treze", "catorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove")
-private val DEZ = mapOf(2 to "vinte", 3 to "trinta", 4 to "quarenta", 5 to "cinquenta")
-private fun minExt(m: Int) = if (m < 20) UNI[m] else DEZ[m / 10] + if (m % 10 != 0) " e " + UNI[m % 10] else ""
-private val HORAS = listOf("meia-noite", "uma", "duas", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "meio-dia")
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ClockView(cfg: Config, s: Float, notifCount: Int) {
-    val now by produceState(System.currentTimeMillis()) {
-        while (true) { value = System.currentTimeMillis(); delay(1000 - value % 1000) }
-    }
-    val c = Calendar.getInstance().apply { timeInMillis = now }
-    val hh = c.get(Calendar.HOUR_OF_DAY); val mm = c.get(Calendar.MINUTE); val ss = c.get(Calendar.SECOND)
-    val h = "%02d".format(hh); val m = "%02d".format(mm)
-    val z = cfg.clockScale * s
-    val col = if (cfg.clockColor == 0) INK else Color(cfg.clockColor)
+fun AppRowItem(
+    app: AppInfo, cfg: Config, dot: Boolean, onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val al = cfg.align["favs"] ?: "left"
+    val arr = when (al) { "center" -> Alignment.CenterHorizontally; "right" -> Alignment.End; else -> Alignment.Start }
+    var label = if (cfg.lowercase) app.label.lowercase() else app.label
+    if (cfg.theme == "tech") label = "> $label"
+    val mode = cfg.labelMode
     val acc = Color(Accent.current(cfg))
-    val fam = when (cfg.clockFont) {
-        "sans" -> FontFamily.SansSerif; "mono" -> FontFamily.Monospace
-        "serif" -> FontFamily.Serif; "cursiva" -> FontFamily.Cursive
-        else -> themeFont(cfg.theme)
-    }
-    val w = cfg.clockWeight
-    when (cfg.clockStyle) {
-        "segundos" -> Row(verticalAlignment = Alignment.Bottom) {
-            T("$h:$m", 64f * z, color = col, weight = w, family = fam)
-            T(":%02d".format(ss), 26f * z, color = acc, weight = w, family = fam, modifier = Modifier.padding(bottom = (10 * z).dp))
-        }
-        "gigante" -> T("$h\n$m", 118f * z, color = col, weight = w, family = fam, lineHeight = 104f * z)
-        "bloco" -> Row(horizontalArrangement = Arrangement.spacedBy((4 * z).dp)) {
-            (h + m).forEachIndexed { i, ch ->
-                if (i == 2) Spacer(Modifier.width((8 * z).dp))
-                Box(Modifier.background(col).padding(horizontal = (8 * z).dp, vertical = (2 * z).dp)) {
-                    T(ch.toString(), 46f * z, color = Color(0xFF0A0A0A), weight = 900, family = fam, shadow = false)
-                }
-            }
-        }
-        "elastico" -> {
-            val big by animateFloatAsState(if (notifCount > 0) 54f else 116f, label = "elastico")
-            T("$h:$m", big * z, color = col, weight = if (notifCount > 0) 500 else 200, family = fam, letter = -2f)
-        }
-        "vertical" -> Column {
-            T(h, 84f * z, color = col, weight = w.coerceAtLeast(700), family = fam, lineHeight = 80f * z)
-            T(m, 84f * z, color = col.copy(alpha = 0.55f), weight = w.coerceAtLeast(700), family = fam, lineHeight = 80f * z)
-        }
-        "texto" -> Column {
-            val um = hh % 12 == 1 || hh == 0 || hh == 12
-            val hw = when (hh) { 0 -> HORAS[0]; 12 -> HORAS[12]; else -> HORAS[hh % 12] }
-            T(if (um) "é" else "são", 20f * z, color = DIM, family = fam)
-            T(hw, 42f * z, color = col, weight = 800, family = fam, lineHeight = 44f * z)
-            T(if (mm == 0) "em ponto" else "e ${minExt(mm)}", 26f * z, color = col, weight = 300, family = fam)
-        }
-        "binario" -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            BinRow(hh, 5, col, z); BinRow(mm, 6, col, z)
-            T("$h:$m", 12f, color = DIM, family = FontFamily.Monospace)
-        }
-        "terminal" -> Column {
-            T("$ date +%H:%M", 14f * z, color = acc, family = FontFamily.Monospace)
-            T("$h:$m" + if (ss % 2 == 0) "█" else " ", 50f * z, color = col, weight = 800, family = FontFamily.Monospace)
-        }
-        "runico" -> Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                T(h, 60f * z, color = col, weight = w, family = FontFamily.Serif)
-                T(RUNES[ss % RUNES.length].toString(), 44f * z, color = acc, family = FontFamily.Serif, modifier = Modifier.padding(horizontal = 6.dp))
-                T(m, 60f * z, color = col, weight = w, family = FontFamily.Serif)
-            }
-            T(h.map { RUNES[it - '0'] }.joinToString("") + " · " + m.map { RUNES[it - '0' + 10] }.joinToString(""), 16f * z, color = DIM, letter = 4f)
-        }
-        "fino" -> T("$h:$m", 76f * z, color = col, weight = 100, family = fam)
-        "barras" -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            T("$h:$m", 48f * z, color = col, weight = w, family = fam)
-            Row(Modifier.width((220 * z).dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                repeat(24) { i ->
-                    Box(Modifier.weight(1f).height((14 * z).dp).background(when {
-                        i < hh -> col; i == hh -> acc; else -> col.copy(alpha = 0.18f)
-                    }))
-                }
-            }
-            T("${(hh * 60 + mm) * 100 / 1440}% do dia", 11f, color = DIM, family = FontFamily.Monospace)
-        }
-        "analogico" -> Canvas(Modifier.size((150 * z).dp)) {
-            val sz = size.minDimension; val cx = sz / 2; val st = sz * 0.03f
-            drawRect(col, topLeft = Offset(st / 2, st / 2), size = Size(sz - st, sz - st), style = Stroke(st))
-            for (i in 0 until 12) {
-                val a = i * Math.PI / 6; val r = sz * 0.40f
-                drawRect(col, Offset(cx + (r * sin(a)).toFloat() - st, cx - (r * cos(a)).toFloat() - st), Size(st * 2, st * 2))
-            }
-            fun hand(angle: Double, len: Float, wd: Float, cl: Color) {
-                rotate((angle * 180 / Math.PI).toFloat(), Offset(cx, cx)) { drawRect(cl, Offset(cx - wd / 2, cx - len), Size(wd, len)) }
-            }
-            hand((hh % 12 + mm / 60.0) * Math.PI / 6, sz * 0.24f, st * 2.2f, col)
-            hand(mm * Math.PI / 30, sz * 0.34f, st * 1.4f, col)
-            hand(ss * Math.PI / 30, sz * 0.38f, st * 0.6f, acc)
-            drawRect(col, Offset(cx - st * 1.5f, cx - st * 1.5f), Size(st * 3, st * 3))
-        }
-        else -> T("$h:$m", 64f * z, color = col, weight = w, family = fam, letter = -1f)
+    val shape = cfg.rr(20f)
+    Row(
+        modifier.fillMaxWidth().heightIn(min = rowHeight(cfg).dp).clip(shape)
+            .background(if (pressed) Color(0x33FFFFFF) else Color.Transparent)
+            .combinedClickable(interactionSource = src, indication = null, onClick = { onApp(app) }, onLongClick = { onLong(app) })
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp, arr),
+    ) {
+        if (mode == "icon_name" || mode == "icon") AppIcon(app, cfg.iconSize, cfg)
+        if (mode != "icon") T(
+            label, cfg.fontSize, Modifier.weight(1f, fill = false), weight = cfg.fontWeight,
+            face = themeFace(cfg.theme), ellipsis = true, maxLines = 1,
+        )
+        if (cfg.theme == "runa" && mode != "icon") T(runeOf(app.label), cfg.fontSize * 0.75f, color = acc, face = "runic")
+        if (mode == "name_icon") AppIcon(app, cfg.iconSize, cfg)
+        if (dot) Box(Modifier.size(8.dp).clip(cfg.iconShape()).background(acc))
     }
 }
 
 @Composable
-fun BinRow(v: Int, bits: Int, col: Color, z: Float) {
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        v.toString(2).padStart(bits, '0').forEach { b ->
-            Box(Modifier.size((16 * z).dp).border(1.5.dp, col).background(if (b == '1') col else Color.Transparent))
-        }
+fun AppIcon(app: AppInfo, sizeDp: Float, cfg: Config) {
+    val ctx = LocalContext.current
+    val mode = cfg.perApp[app.key] ?: cfg.iconMode
+    val accent = Accent.current(cfg)
+    val px = with(LocalDensity.current) { sizeDp.dp.roundToPx() }.coerceIn(48, 192)
+    val img by produceState<ImageBitmap?>(null, app.key, mode, accent, px) {
+        value = IconCache.get(ctx, app, mode, accent, px)
+    }
+    Box(Modifier.size(sizeDp.dp).clip(cfg.iconShape()).background(Color(0x22FFFFFF))) {
+        img?.let { Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
     }
 }
 
-/* =================== BARRA DE LETRAS (estilo Niagara) =================== */
+/* =================== BARRA DE LETRAS =================== */
 
 @Composable
-fun BoxScope.AlphaBar(cfg: Config, activeIdx: Int, onTouch: (Int, Float) -> Unit, onRelease: (Int) -> Unit) {
+fun BoxScope.AlphaBar(
+    cfg: Config, visible: Boolean, activeIdx: Int, present: Set<String>,
+    onTouch: (Int, Float) -> Unit, onRelease: (Int) -> Unit,
+) {
     val left = cfg.azSide == "left"
     var topY by remember { mutableFloatStateOf(0f) }
     val touch by rememberUpdatedState(onTouch)
     val release by rememberUpdatedState(onRelease)
     val acc = Color(Accent.current(cfg))
+    val a by animateFloatAsState(if (visible) 1f else 0f, tween(200), label = "barra")
     Column(
         Modifier.align(if (left) Alignment.CenterStart else Alignment.CenterEnd)
             .systemBarsPadding()
-            .fillMaxHeight(0.80f)
-            .width(36.dp)
+            .fillMaxHeight(0.86f)
+            .width(44.dp)
             .onGloballyPositioned { topY = it.positionInRoot().y }
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -571,73 +529,49 @@ fun BoxScope.AlphaBar(cfg: Config, activeIdx: Int, onTouch: (Int, Float) -> Unit
                     }
                     release(idx)
                 }
-            },
+            }
+            .graphicsLayer { alpha = a },
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         AZ.forEachIndexed { i, l ->
             val d = if (activeIdx < 0) 99 else abs(i - activeIdx)
-            val pull by animateFloatAsState(if (d < 5) (5 - d) * 10f else 0f, label = "onda")
-            val sc = 1f + pull / 40f
+            val pull by animateFloatAsState(if (d < 4) (4 - d) * 7f else 0f, label = "onda")
+            val sc = 1f + pull / 70f
+            val isLetter = l.length == 1 && (l[0] in 'A'..'Z' || l == "#")
+            val has = !isLetter || l in present
             T(
-                l, if (l.length == 1 && l[0] in 'A'..'Z') 10f else 13f,
-                Modifier.offset(x = (if (left) pull else -pull).dp).graphicsLayer { scaleX = sc; scaleY = sc },
-                color = if (d == 0) acc else DIM, weight = if (d == 0) 800 else 500,
-                family = if (cfg.theme == "runa" && l[0] in 'A'..'Z') FontFamily.Serif else FontFamily.Monospace,
+                l, 12f,
+                Modifier.graphicsLayer {
+                    translationX = (if (left) pull else -pull) * density
+                    scaleX = sc; scaleY = sc
+                    alpha = if (has) 1f else 0.35f
+                },
+                color = if (d == 0) acc else DIM, weight = if (d == 0) 800 else 500, face = "mono",
             )
         }
     }
 }
 
 @Composable
-fun BoxScope.LetterPanel(
-    cfg: Config, apps: List<AppInfo>, letter: String?, dragIdx: Int, fingerY: Float, notifPkgs: Set<String>,
-    onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit, onDismiss: () -> Unit,
-) {
+fun BoxScope.LetterBubble(cfg: Config, letter: String, fingerY: Float, screenH: Dp, statusTop: Dp) {
     val acc = Color(Accent.current(cfg))
     val left = cfg.azSide == "left"
-    // toque no vazio volta pra tela inicial
-    Box(Modifier.fillMaxSize().background(Color(0x47000000)).clickable(remember { MutableInteractionSource() }, null) { onDismiss() })
-
-    if (dragIdx >= 0) {
-        val l = AZ[dragIdx]
-        Box(
-            Modifier.align(if (left) Alignment.TopStart else Alignment.TopEnd)
-                .padding(start = if (left) 48.dp else 0.dp, end = if (left) 0.dp else 48.dp)
-                .offset { IntOffset(0, (fingerY - 32.dp.toPx()).roundToInt()) }
-                .size(64.dp).background(acc),
-            contentAlignment = Alignment.Center,
-        ) {
-            T(if (cfg.theme == "runa" && l[0] in 'A'..'Z') runeOf(l) else l, 30f, color = Color(0xFF0A0A0A), weight = 900, shadow = false)
-        }
-    }
-
-    if (letter != null) {
-        val list = apps.filter { it.letter == letter }
-        var panelH by remember { mutableIntStateOf(0) }
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val maxPx = constraints.maxHeight
-            val maxH = maxHeight
-            Column(
-                Modifier.align(if (left) Alignment.TopEnd else Alignment.TopStart)
-                    .padding(start = if (left) 0.dp else 26.dp, end = if (left) 26.dp else 0.dp)
-                    .widthIn(max = 260.dp)
-                    .heightIn(max = maxH * 0.8f)
-                    .onSizeChanged { panelH = it.height }
-                    .offset {
-                        val top = 56.dp.toPx()
-                        val y = (fingerY - panelH / 2f).coerceIn(top, (maxPx - panelH - top).coerceAtLeast(top))
-                        IntOffset(0, y.roundToInt())
-                    }
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalAlignment = if (left) Alignment.End else Alignment.Start,
-            ) {
-                T(if (cfg.theme == "runa") "${runeOf(letter)} $letter" else letter, 13f, color = acc, weight = 800, family = FontFamily.Monospace, letter = 3f)
-                if (list.isEmpty()) T("nenhum app", 15f, color = DIM)
-                else list.forEach { AppRow(it, cfg, 1f, it.pkg in notifPkgs, onApp, onLong) }
-            }
-        }
+    val d = LocalDensity.current
+    val size = 68.dp
+    val minY = with(d) { (statusTop + 8.dp).toPx() }
+    val maxY = with(d) { (screenH - size - 40.dp).toPx() }
+    val y = (fingerY - with(d) { (size / 2).toPx() }).coerceIn(minY, maxY.coerceAtLeast(minY))
+    Box(
+        Modifier.align(if (left) Alignment.TopStart else Alignment.TopEnd)
+            .padding(start = if (left) 92.dp else 0.dp, end = if (left) 0.dp else 92.dp)
+            .offset { IntOffset(0, y.roundToInt()) }
+            .size(size).clip(cfg.rr(26f)).background(acc),
+        contentAlignment = Alignment.Center,
+    ) {
+        val isLetter = letter.length == 1 && letter[0] in 'A'..'Z'
+        if (cfg.theme == "runa" && isLetter) T(runeOf(letter), 32f, color = Color(0xFF0A0A0A), weight = 900, face = "runic", shadow = false)
+        else T(letter, 32f, color = Color(0xFF0A0A0A), weight = 800, face = "mono", shadow = false)
     }
 }
 
@@ -659,17 +593,18 @@ fun SearchOverlay(
         showHidden -> apps.filter { it.key in cfg.hidden }
         qq.isEmpty() -> emptyList()
         else -> apps.filter { it.key !in cfg.hidden && norm(it.label).contains(norm(qq)) }
-    }.take(14)
+    }.take(12)
     val conta = calc(qq)
-    Box(Modifier.fillMaxSize().background(Color(0x99000000)).clickable(remember { MutableInteractionSource() }, null) { onClose() }) {
+    Box(Modifier.fillMaxSize().background(Color(0xB3000000)).clickable(remember { MutableInteractionSource() }, null) { onClose() }) {
         Column(
-            Modifier.fillMaxWidth().statusBarsPadding().imePadding().padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            Modifier.fillMaxWidth().statusBarsPadding().imePadding().padding(horizontal = 22.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             BasicTextField(
                 q, { q = it },
-                Modifier.fillMaxWidth().focusRequester(fr).border(1.dp, acc).background(Color(0x66000000)).padding(14.dp),
-                textStyle = TextStyle(color = INK, fontSize = 20.sp, fontFamily = themeFont(cfg.theme)),
+                Modifier.fillMaxWidth().focusRequester(fr).clip(cfg.rr(24f)).border(1.5.dp, acc, cfg.rr(24f))
+                    .background(Color(0x66000000)).padding(horizontal = 18.dp, vertical = 16.dp),
+                textStyle = TextStyle(color = INK, fontSize = 20.sp),
                 cursorBrush = SolidColor(acc), singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { res.firstOrNull()?.let(onApp) }),
@@ -681,60 +616,10 @@ fun SearchOverlay(
                 },
             )
             if (conta != null) T("= $conta", 34f, color = acc, weight = 700)
-            if (showHidden) T("ᛟ APPS OCULTOS", 11f, color = DIM, letter = 2f)
-            res.forEach { AppRow(it, cfg, 1f, it.pkg in notifPkgs, onApp, onLong) }
+            if (showHidden) T("ᛟ APPS OCULTOS", 11f, color = DIM, letter = 2f, face = "mono")
+            res.forEach { AppRowItem(it, cfg, it.pkg in notifPkgs, onApp, onLong) }
             if (qq.isNotEmpty() && res.isEmpty() && conta == null) T("nada encontrado", 15f, color = DIM)
         }
-    }
-}
-
-/** Calculadora simples: + - * / e parênteses. */
-fun calc(s: String): String? {
-    val e = s.replace(",", ".").replace(" ", "").replace("x", "*")
-    if (e.isEmpty() || !e.any { it.isDigit() } || !e.any { it in "+-*/" } || !e.all { it.isDigit() || it in "+-*/()." }) return null
-    return try {
-        val p = Calc(e)
-        val v = p.expr()
-        if (!p.done() || v.isNaN() || v.isInfinite()) null
-        else if (v == Math.floor(v) && abs(v) < 1e15) v.toLong().toString()
-        else "%.6f".format(Locale.US, v).trimEnd('0').trimEnd('.')
-    } catch (ex: Exception) {
-        null
-    }
-}
-
-private class Calc(val e: String) {
-    var p = 0
-    fun done() = p == e.length
-    fun expr(): Double {
-        var v = term()
-        while (p < e.length && e[p] in "+-") {
-            val op = e[p++]
-            val r = term()
-            v = if (op == '+') v + r else v - r
-        }
-        return v
-    }
-    fun term(): Double {
-        var v = num()
-        while (p < e.length && e[p] in "*/") {
-            val op = e[p++]
-            val r = num()
-            v = if (op == '*') v * r else v / r
-        }
-        return v
-    }
-    fun num(): Double {
-        if (p < e.length && e[p] == '(') {
-            p++
-            val v = expr()
-            if (p < e.length && e[p] == ')') p++
-            return v
-        }
-        if (p < e.length && e[p] == '-') { p++; return -num() }
-        val st = p
-        while (p < e.length && (e[p].isDigit() || e[p] == '.')) p++
-        return e.substring(st, p).toDouble()
     }
 }
 
@@ -742,16 +627,19 @@ private class Calc(val e: String) {
 
 @Composable
 fun MBtn(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val cfg = Store.cfg
+    val t = tok(cfg)
+    val sh = cfg.rr(18f)
     Box(
-        modifier.fillMaxWidth().border(1.dp, Color(0xFF2C322F)).background(Color(0xFF181C1A))
-            .clickable(onClick = onClick).padding(14.dp),
-    ) { T(label, 15f, shadow = false) }
+        modifier.fillMaxWidth().card(t, sh, t.card2).clip(sh).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+    ) { T(label, 15f, color = t.text, shadow = false, wrap = true) }
 }
 
 fun nextMode(cur: String?): String? {
     val order: List<String?> = listOf<String?>(null) + ICON_MODES.map { it.first }
     return order[(order.indexOf(cur) + 1) % order.size]
 }
+
 fun modeName(m: String?): String = if (m == null) "padrão" else ICON_MODES.firstOrNull { it.first == m }?.second ?: m
 
 fun setAppMode(key: String, mode: String?) = Store.update { c ->
@@ -761,19 +649,23 @@ fun setAppMode(key: String, mode: String?) = Store.update { c ->
 @Composable
 fun BoxScope.AppMenu(app: AppInfo, cfg: Config, onClose: () -> Unit) {
     val ctx = LocalContext.current
+    val t = tok(cfg)
     val fav = app.key in cfg.favs
     val hid = app.key in cfg.hidden
-    Box(Modifier.fillMaxSize().background(Color(0x88000000)).clickable(remember { MutableInteractionSource() }, null) { onClose() })
+    Box(Modifier.fillMaxSize().background(Color(0x99000000)).clickable(remember { MutableInteractionSource() }, null) { onClose() })
+    val topR = (32f * cfg.corner / 50f).dp
     Column(
-        Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xFF101312))
+        Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            .card(t, androidx.compose.foundation.shape.RoundedCornerShape(topStart = topR, topEnd = topR), t.bg)
             .pointerInput(Unit) { detectTapGestures { } }
-            .navigationBarsPadding().padding(16.dp),
+            .navigationBarsPadding().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            AppIcon(app, 44f, cfg)
-            T(app.label, 20f, weight = 700, shadow = false)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            AppIcon(app, 46f, cfg)
+            T(app.label, 20f, color = t.text, weight = 600, shadow = false)
         }
+        Spacer(Modifier.height(4.dp))
         MBtn(if (fav) "Tirar dos favoritos" else "Pôr nos favoritos") {
             Store.update { c -> c.copy(favs = if (fav) c.favs - app.key else c.favs + app.key) }; onClose()
         }
@@ -782,7 +674,7 @@ fun BoxScope.AppMenu(app: AppInfo, cfg: Config, onClose: () -> Unit) {
             MBtn("↑ Subir", Modifier.weight(1f)) { Store.update { c -> c.copy(favs = c.favs.swap(i, i - 1)) } }
             MBtn("↓ Descer", Modifier.weight(1f)) { Store.update { c -> c.copy(favs = c.favs.swap(i, i + 1)) } }
         }
-        MBtn(if (hid) "Mostrar de novo" else "Ocultar app ᛟ") {
+        MBtn(if (hid) "Mostrar de novo" else "Ocultar app") {
             Store.update { c -> c.copy(hidden = if (hid) c.hidden - app.key else c.hidden + app.key) }; onClose()
         }
         MBtn("Ícone só deste app: ${modeName(cfg.perApp[app.key])}  (toque pra trocar)") { setAppMode(app.key, nextMode(cfg.perApp[app.key])) }

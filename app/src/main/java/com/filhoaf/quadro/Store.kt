@@ -12,20 +12,26 @@ import org.json.JSONObject
 
 data class Rule(val who: String, val face: String, val msg: String)
 
-val ALL_BLOCKS = listOf("clock", "buddy", "date", "treino", "spacer", "favs")
+/** Blocos que ficam no topo da tela inicial. A lista de favoritos é sempre a parte de baixo. */
+val TOP_BLOCKS = listOf("clock", "buddy", "date", "treino")
+
+const val CFG_VERSION = 2
 
 data class Config(
     // visual
     val theme: String = "minimal",          // minimal | tech | runa
     val labelMode: String = "icon_name",    // icon_name | name | icon | name_icon
-    val fontSize: Float = 20f,
-    val fontWeight: Int = 400,
+    val fontSize: Float = 26f,
+    val fontWeight: Int = 300,
     val lowercase: Boolean = true,
-    val iconSize: Float = 30f,
+    val iconSize: Float = 40f,
     val azSide: String = "right",
+    val corner: Int = 22,                    // 0 = quadrado, 50 = redondo
+    val uiStyle: String = "suave",           // suave | contorno (painéis de ajustes)
+    val favBottom: Float = 120f,             // distância dos favoritos até o fim da tela (dp)
     // ícones
-    val iconMode: String = "orig",          // orig | black | black_color | white | white_color | grey | duo
-    val colorSource: String = "wall",       // wall | custom
+    val iconMode: String = "orig",
+    val colorSource: String = "wall",        // wall | custom
     val customColor: Int = 0xFFFF7A1A.toInt(),
     val perApp: Map<String, String> = emptyMap(),
     // apps
@@ -43,7 +49,7 @@ data class Config(
     val buddyName: String = "Bit",
     val rules: List<Rule> = listOf(Rule("Mãe", "(♥‿♥)", "{q} mandou mensagem ♥")),
     // tela
-    val order: List<String> = ALL_BLOCKS,
+    val order: List<String> = TOP_BLOCKS,
     val hiddenBlocks: List<String> = emptyList(),
     val align: Map<String, String> = emptyMap(),
     val scale: Map<String, Float> = emptyMap(),
@@ -78,10 +84,15 @@ object Store {
 
     fun reset() = update { Config(firstRun = true) }
 
+    fun export(): String = toJson(cfg)
+
     private fun toJson(c: Config): String = JSONObject().apply {
+        put("ver", CFG_VERSION)
         put("theme", c.theme); put("labelMode", c.labelMode); put("fontSize", c.fontSize.toDouble())
         put("fontWeight", c.fontWeight); put("lowercase", c.lowercase); put("iconSize", c.iconSize.toDouble())
-        put("azSide", c.azSide); put("iconMode", c.iconMode); put("colorSource", c.colorSource)
+        put("azSide", c.azSide); put("corner", c.corner); put("uiStyle", c.uiStyle)
+        put("favBottom", c.favBottom.toDouble())
+        put("iconMode", c.iconMode); put("colorSource", c.colorSource)
         put("customColor", c.customColor); put("perApp", JSONObject(c.perApp as Map<*, *>))
         put("favs", JSONArray(c.favs)); put("hidden", JSONArray(c.hidden))
         put("clockStyle", c.clockStyle); put("clockFont", c.clockFont); put("clockScale", c.clockScale.toDouble())
@@ -100,6 +111,7 @@ object Store {
     private fun fromJson(s: String): Config {
         val o = JSONObject(s)
         val d = Config()
+        val old = o.optInt("ver", 1) < CFG_VERSION
         fun str(k: String, def: String) = o.optString(k, def)
         fun flt(k: String, def: Float) = o.optDouble(k, def.toDouble()).toFloat()
         fun list(k: String, def: List<String>): List<String> =
@@ -114,12 +126,17 @@ object Store {
                 Rule(r.optString("who"), r.optString("face"), r.optString("msg"))
             }
         } ?: d.rules
-        val order = list("order", d.order).filter { it in ALL_BLOCKS }
+        val order = list("order", d.order).filter { it in TOP_BLOCKS }.distinct()
         return Config(
             theme = str("theme", d.theme), labelMode = str("labelMode", d.labelMode),
-            fontSize = flt("fontSize", d.fontSize), fontWeight = o.optInt("fontWeight", d.fontWeight),
-            lowercase = o.optBoolean("lowercase", d.lowercase), iconSize = flt("iconSize", d.iconSize),
-            azSide = str("azSide", d.azSide), iconMode = str("iconMode", d.iconMode),
+            // versão 1 tinha tamanhos pequenos demais: pega os novos padrões
+            fontSize = if (old) d.fontSize else flt("fontSize", d.fontSize),
+            fontWeight = if (old) d.fontWeight else o.optInt("fontWeight", d.fontWeight),
+            lowercase = o.optBoolean("lowercase", d.lowercase),
+            iconSize = if (old) d.iconSize else flt("iconSize", d.iconSize),
+            azSide = str("azSide", d.azSide), corner = o.optInt("corner", d.corner).coerceIn(0, 50),
+            uiStyle = str("uiStyle", d.uiStyle), favBottom = flt("favBottom", d.favBottom),
+            iconMode = str("iconMode", d.iconMode),
             colorSource = str("colorSource", d.colorSource), customColor = o.optInt("customColor", d.customColor),
             perApp = smap("perApp"), favs = list("favs", d.favs), hidden = list("hidden", d.hidden),
             clockStyle = str("clockStyle", d.clockStyle), clockFont = str("clockFont", d.clockFont),
@@ -127,8 +144,9 @@ object Store {
             clockColor = o.optInt("clockColor", d.clockColor),
             buddyOn = o.optBoolean("buddyOn", d.buddyOn), buddyInline = o.optBoolean("buddyInline", d.buddyInline),
             buddyName = str("buddyName", d.buddyName), rules = rules,
-            order = order + ALL_BLOCKS.filter { it !in order },
-            hiddenBlocks = list("hiddenBlocks", d.hiddenBlocks), align = smap("align"), scale = fmap("scale"),
+            order = order + TOP_BLOCKS.filter { it !in order },
+            hiddenBlocks = list("hiddenBlocks", d.hiddenBlocks).filter { it in TOP_BLOCKS },
+            align = smap("align"), scale = fmap("scale"),
             treino = list("treino", d.treino), pcName = str("pcName", d.pcName), pcIp = str("pcIp", d.pcIp),
             pcKey = str("pcKey", d.pcKey), firstRun = o.optBoolean("firstRun", d.firstRun),
         )
