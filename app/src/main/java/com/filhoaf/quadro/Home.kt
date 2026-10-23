@@ -260,6 +260,8 @@ fun QuadroApp(homeTick: Int) {
                 else (listState.firstVisibleItemScrollOffset / gapPx).coerceIn(0f, 1f)
             }
         }
+        // a lista de todos os apps só aceita toque quando já está visível (senão o toque "vaza" pro app invisível)
+        val listVisible by remember(gapPx) { derivedStateOf { !editing && progress.value > 0.2f } }
         val left = cfg.azSide == "left"
         val al = cfg.align["favs"] ?: "left"
         val acc = Color(Accent.current(cfg))
@@ -326,10 +328,12 @@ fun QuadroApp(homeTick: Int) {
                     is LI.Fav -> AppRowItem(
                         item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong,
                         Modifier.graphicsLayer { alpha = if (editing) 0f else 1f },
+                        enabled = !editing,
                     )
                     is LI.App -> AppRowItem(
                         item.app, cfg, item.app.pkg in notifPkgs, onApp, onLong,
                         Modifier.graphicsLayer { alpha = (progress.value * 2.5f).coerceIn(0f, 1f) },
+                        enabled = listVisible,
                     )
                     is LI.Label -> {
                         val lt: String? = item.letter
@@ -648,6 +652,7 @@ fun BuddyView(cfg: Config, s: Float, notifs: List<Notif>, batt: Int, charging: B
 fun AppRowItem(
     app: AppInfo, cfg: Config, dot: Boolean, onApp: (AppInfo) -> Unit, onLong: (AppInfo) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
@@ -660,8 +665,11 @@ fun AppRowItem(
     val shape = cfg.rr(20f)
     Row(
         modifier.fillMaxWidth().heightIn(min = rowHeight(cfg).dp).clip(shape)
-            .background(if (pressed) Color(0x33FFFFFF) else Color.Transparent)
-            .combinedClickable(interactionSource = src, indication = null, onClick = { onApp(app) }, onLongClick = { onLong(app) })
+            .background(if (pressed && enabled) Color(0x33FFFFFF) else Color.Transparent)
+            .then(
+                if (enabled) Modifier.combinedClickable(interactionSource = src, indication = null, onClick = { onApp(app) }, onLongClick = { onLong(app) })
+                else Modifier,
+            )
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp, arr),
