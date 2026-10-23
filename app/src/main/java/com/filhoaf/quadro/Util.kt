@@ -63,3 +63,13 @@ private class Calc(val e: String) {
         return e.substring(st, p).toDouble()
     }
 }
+
+/** Pergunta ao PC se o programinha está rodando (chamar fora da thread principal). */
+fun pcOnline(cfg: Config): Boolean = try {
+    val con = java.net.URL("http://${cfg.pcIp}:5757/").openConnection() as java.net.HttpURLConnection
+    con.connectTimeout = 3000
+    con.readTimeout = 3000
+    val c = con.responseCode
+    con.disconnect()
+    c == 200
+} catch (e: Exception) { false }

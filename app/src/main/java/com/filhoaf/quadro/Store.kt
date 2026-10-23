@@ -32,6 +32,9 @@ data class Config(
     val favAnchor: String = "top",           // top = logo abaixo do relógio | bottom = embaixo
     val favGap: Float = 28f,                 // espaço entre o topo e os favoritos (dp)
     val blockGap: Float = 12f,               // espaço entre os blocos do topo (dp)
+    val scrimMode: String = "dark",          // none | dark | color | blur (efeito ao rolar a lista)
+    val scrimAmt: Float = 0.55f,
+    val scrimColor: Int = 0xFFE07AA8.toInt(),
     // ícones
     val iconMode: String = "orig",
     val colorSource: String = "wall",        // wall | custom
@@ -94,7 +97,7 @@ object Store {
         put("theme", c.theme); put("labelMode", c.labelMode); put("fontSize", c.fontSize.toDouble())
         put("fontWeight", c.fontWeight); put("lowercase", c.lowercase); put("iconSize", c.iconSize.toDouble())
         put("azSide", c.azSide); put("corner", c.corner); put("uiStyle", c.uiStyle)
-        put("favBottom", c.favBottom.toDouble()); put("favAnchor", c.favAnchor); put("favGap", c.favGap.toDouble()); put("blockGap", c.blockGap.toDouble())
+        put("favBottom", c.favBottom.toDouble()); put("favAnchor", c.favAnchor); put("favGap", c.favGap.toDouble()); put("blockGap", c.blockGap.toDouble()); put("scrimMode", c.scrimMode); put("scrimAmt", c.scrimAmt.toDouble()); put("scrimColor", c.scrimColor)
         put("iconMode", c.iconMode); put("colorSource", c.colorSource)
         put("customColor", c.customColor); put("perApp", JSONObject(c.perApp as Map<*, *>))
         put("favs", JSONArray(c.favs)); put("hidden", JSONArray(c.hidden))
@@ -140,6 +143,7 @@ object Store {
             azSide = str("azSide", d.azSide), corner = o.optInt("corner", d.corner).coerceIn(0, 50),
             uiStyle = str("uiStyle", d.uiStyle), favBottom = flt("favBottom", d.favBottom),
             favAnchor = str("favAnchor", d.favAnchor), favGap = flt("favGap", d.favGap), blockGap = flt("blockGap", d.blockGap),
+            scrimMode = str("scrimMode", d.scrimMode), scrimAmt = flt("scrimAmt", d.scrimAmt), scrimColor = o.optInt("scrimColor", d.scrimColor),
             iconMode = str("iconMode", d.iconMode),
             colorSource = str("colorSource", d.colorSource), customColor = o.optInt("customColor", d.customColor),
             perApp = smap("perApp"), favs = list("favs", d.favs), hidden = list("hidden", d.hidden),
@@ -160,12 +164,15 @@ object Store {
 /** Cor de destaque: detectada do papel de parede ou escolhida. */
 object Accent {
     var wall by mutableIntStateOf(0xFF7FD1A0.toInt())
+    var wall2 by mutableIntStateOf(0xFF3A4FA0.toInt())
 
     fun refresh(ctx: Context) {
         try {
-            val c = WallpaperManager.getInstance(ctx)
-                .getWallpaperColors(WallpaperManager.FLAG_SYSTEM)?.primaryColor?.toArgb()
+            val wc = WallpaperManager.getInstance(ctx).getWallpaperColors(WallpaperManager.FLAG_SYSTEM)
+            val c = wc?.primaryColor?.toArgb()
             if (c != null) wall = vivid(c)
+            val c2 = (wc?.secondaryColor ?: wc?.tertiaryColor)?.toArgb()
+            if (c2 != null) wall2 = vivid(c2)
         } catch (e: Exception) { }
     }
 

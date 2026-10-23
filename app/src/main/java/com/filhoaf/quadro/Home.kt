@@ -270,7 +270,22 @@ fun QuadroApp(homeTick: Int) {
                 Brush.verticalGradient(listOf(Color(0x66000000), Color(0x00000000), Color(0x00000000), Color(0x59000000))),
             ),
         )
-        Box(Modifier.fillMaxSize().graphicsLayer { alpha = progress.value * 0.9f }.background(Color(0xFF0C0B18)))
+        // efeito ao rolar: nenhum, escuro, colorido ou borrado (o borrado depende do celular, Android 12+)
+        val scrimCol = if (cfg.scrimMode == "color") Color(cfg.scrimColor) else Color(0xFF0C0B18)
+        val scrimMax = when (cfg.scrimMode) { "none" -> 0f; "blur" -> cfg.scrimAmt * 0.35f; "color" -> cfg.scrimAmt * 0.7f; else -> cfg.scrimAmt }
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = progress.value * scrimMax }.background(scrimCol))
+        val activity = ctx as? android.app.Activity
+        LaunchedEffect(cfg.scrimMode, cfg.scrimAmt, progress) {
+            if (android.os.Build.VERSION.SDK_INT >= 31 && activity != null) {
+                if (cfg.scrimMode != "blur") {
+                    try { activity.window.setBackgroundBlurRadius(0) } catch (e: Exception) { }
+                } else {
+                    snapshotFlow { (progress.value * 10).roundToInt() }.collect { st ->
+                        try { activity.window.setBackgroundBlurRadius((st / 10f * 80f * cfg.scrimAmt).roundToInt()) } catch (e: Exception) { }
+                    }
+                }
+            }
+        }
 
         LazyColumn(
             state = listState,
@@ -347,7 +362,15 @@ fun QuadroApp(homeTick: Int) {
         TopBlocks(
             cfg, notifs, batt, charging, editing, apps, { picking = true },
             Modifier.onSizeChanged { topH = it.height }
-                .graphicsLayer { alpha = if (editing) 1f else (1f - progress.value * 1.8f).coerceIn(0f, 1f); translationY = if (editing) 0f else -progress.value * 90f },
+                .graphicsLayer {
+                    val p = if (editing) 0f else progress.value
+                    val e = 1f - (1f - p) * (1f - p) // desacelera suave
+                    alpha = (1f - e * 1.6f).coerceIn(0f, 1f)
+                    translationY = -e * 120f
+                    val sc = 1f - e * 0.06f
+                    scaleX = sc; scaleY = sc
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                },
         )
 
         AlphaBar(cfg, barVisible, barIdx, built.letterIdx.keys, onBarTouch, onBarRelease)
@@ -540,17 +563,18 @@ fun FavEditor(cfg: Config, apps: List<AppInfo>, onAdd: () -> Unit) {
 
 @Composable
 fun BoxScope.EditBar(cfg: Config, onDone: () -> Unit) {
-    val acc = Color(Accent.current(cfg))
+    val t = tok(cfg)
     Row(
-        Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color(0xE6000000)).statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding().padding(12.dp)
+            .card(t, cfg.rr(26f), t.bg).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(Modifier.weight(1f)) {
-            T("MODO EDIÇÃO", 13f, color = acc, weight = 800, letter = 2f, face = "mono")
-            T("segure e arraste pra mover · ⇔ alinha · −+ tamanho · ◼ esconde", 11f, color = DIM, wrap = true)
+            T("Editando a tela", 16f, color = t.text, weight = 700, shadow = false)
+            T("segure um cartão e arraste · ⇔ alinha · − + tamanho · ◼ esconde", 11f, color = t.muted, wrap = true, shadow = false)
         }
-        SqBtn("Concluir", acc, shape = cfg.rr(14f)) { onDone() }
+        SqBtn("Pronto", t.acc, t.onAcc, cfg.rr(16f)) { onDone() }
     }
 }
 
@@ -659,7 +683,8 @@ fun AppIcon(app: AppInfo, sizeDp: Float, cfg: Config) {
     val mode = cfg.perApp[app.key] ?: cfg.iconMode
     val accent = Accent.current(cfg)
     val px = with(LocalDensity.current) { sizeDp.dp.roundToPx() }.coerceIn(48, 192)
-    val img by produceState<ImageBitmap?>(null, app.key, mode, accent, px) {
+    val w2 = Accent.wall2
+    val img by produceState<ImageBitmap?>(null, app.key, mode, accent, px, w2) {
         value = IconCache.get(ctx, app, mode, accent, px)
     }
     Box(Modifier.size(sizeDp.dp).clip(cfg.iconShape()).background(Color(0x22FFFFFF))) {

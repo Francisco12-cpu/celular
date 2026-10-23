@@ -75,8 +75,9 @@ object Apps {
 }
 
 val ICON_MODES = listOf(
-    "orig" to "Normal", "black" to "Preto", "black_color" to "Preto + cor",
-    "white" to "Branco", "white_color" to "Branco + cor", "grey" to "Cinza", "duo" to "Cor total",
+    "orig" to "Normal", "soft" to "Grafite", "soft_color" to "Grafite + cor", "black" to "Preto",
+    "black_color" to "Preto + cor", "grey" to "Cinza", "light" to "Cinza claro", "white" to "Branco",
+    "white_color" to "Branco + cor", "wall2" to "Duas cores do fundo", "duo" to "Cor total",
 )
 
 /** Ícones quadrados com filtro. Cada ícone é processado uma vez e fica em cache. */
@@ -85,7 +86,7 @@ object IconCache {
 
     suspend fun get(ctx: Context, app: AppInfo, mode: String, accent: Int, px: Int): ImageBitmap? =
         withContext(Dispatchers.Default) {
-            val k = "${app.key}|$mode|$accent|$px"
+            val k = "${app.key}|$mode|$accent|${Accent.wall2}|$px"
             mem[k] ?: try {
                 val d = ctx.packageManager.getActivityIcon(ComponentName(app.pkg, app.cls))
                 val b = square(d, px)
@@ -137,6 +138,10 @@ object IconCache {
 
     private fun colors(mode: String, acc: Int): Pair<Int, Int> = when (mode) {
         "black" -> 0xFF0B0B0B.toInt() to 0xFFBDBDBD.toInt()
+        "soft" -> 0xFF2B2E2D.toInt() to 0xFFD6DAD8.toInt()
+        "soft_color" -> 0xFF2B2E2D.toInt() to mixC(acc, Color.WHITE, 0.15f)
+        "light" -> 0xFFB8BDBA.toInt() to 0xFF262928.toInt()
+        "wall2" -> mixC(Accent.wall2, Color.BLACK, 0.55f) to mixC(acc, Color.WHITE, 0.30f)
         "grey" -> 0xFF3A3E3C.toInt() to 0xFFF0F0F0.toInt()
         "black_color" -> 0xFF0B0B0B.toInt() to acc
         "white" -> 0xFFF2F2F2.toInt() to 0xFF1C1C1C.toInt()

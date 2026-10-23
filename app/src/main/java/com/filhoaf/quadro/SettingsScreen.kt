@@ -251,6 +251,12 @@ fun VisualTab(cfg: Config) {
         SliderRow("Espaço entre relógio, data e treino", cfg.blockGap, 0f..48f, shown = "${cfg.blockGap.roundToInt()} dp") { v -> Store.update { it.copy(blockGap = v) } }
         Hint("Arrastar a lista pra cima mostra todos os apps. Segure 1 segundo no relógio pra editar a tela.")
     }
+    Section("Efeito ao rolar a lista") {
+        Chips(listOf("none" to "Nenhum", "dark" to "Escurecer", "color" to "Colorido", "blur" to "Borrado"), cfg.scrimMode) { v -> Store.update { it.copy(scrimMode = v) } }
+        if (cfg.scrimMode != "none") SliderRow("Intensidade", cfg.scrimAmt, 0.05f..1f, shown = "${(cfg.scrimAmt * 100).roundToInt()}%") { v -> Store.update { it.copy(scrimAmt = v) } }
+        if (cfg.scrimMode == "color") Swatches(cfg.scrimColor, false) { c -> Store.update { it.copy(scrimColor = c) } }
+        Hint(if (cfg.scrimMode == "blur") "O borrado usa o recurso do Android 12 ou mais novo. Se o seu celular não suportar, fica só um leve escurecido." else "Nenhum: o papel de parede fica igual, só o relógio e os favoritos somem.")
+    }
     Section("Barra de letras") {
         Chips(listOf("right" to "Direita", "left" to "Esquerda"), cfg.azSide) { v -> Store.update { it.copy(azSide = v) } }
         Hint("Ela só aparece quando você rola a lista ou encosta na borda da tela. ◎ no topo abre a busca e ⚙ embaixo abre estes ajustes.")
@@ -413,15 +419,58 @@ fun ScreenTab(cfg: Config, onEdit: () -> Unit) {
 
 @Composable
 fun PcTab(cfg: Config) {
-    val ctx = LocalContext.current
-    Section("Seu PC") {
-        Field("Nome", cfg.pcName) { v -> Store.update { it.copy(pcName = v) } }
-        Field("IP na rede (o script mostra quando abre)", cfg.pcIp) { v -> Store.update { it.copy(pcIp = v.trim()) } }
-        Field("Senha (a mesma do script)", cfg.pcKey) { v -> Store.update { it.copy(pcKey = v) } }
-        MBtn("Testar conexão") { pingPc(ctx, cfg) }
+    val t = LocalTok.current
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    var status by remember { mutableStateOf("não testado") }
+    var checking by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(checking) {
+        if (checking) {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { pcOnline(cfg) }
+            status = if (ok) "conectado ✓" else "sem resposta ✗"
+            checking = false
+        }
     }
-    Section("Como usar") {
-        Hint("1. No PC: python recebe_arquivos.py ${cfg.pcKey}\n2. Celular e PC no mesmo Wi-Fi.\n3. Em qualquer app (galeria, arquivos, navegador): Compartilhar → \"Enviar pro PC\".\n4. O arquivo cai na pasta Recebidos do PC.\n\nNada fica rodando no celular: a conexão só abre na hora do envio.")
+    val cmd = "python recebe_arquivos.py ${cfg.pcKey}"
+    val url = "https://github.com/Francisco12-cpu/celular/blob/main/pc/recebe_arquivos.py"
+    Section("Status") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.size(14.dp).clip(cfg.iconShape()).background(
+                when { status.startsWith("conectado") -> Color(0xFF4ADE80); status.startsWith("sem") -> Color(0xFFF87171); else -> t.muted },
+            ))
+            T("${cfg.pcName}: " + (if (checking) "testando…" else status), 16f, color = t.text, weight = 600, shadow = false)
+        }
+        MBtn(if (checking) "Testando…" else "Testar conexão agora") { if (!checking) checking = true }
+    }
+    PcStep(1, "Baixe o programinha no PC", "É um arquivo Python pequeno, sem instalar nada. Abra este endereço no PC e baixe o arquivo:") {
+        T(url, 12f, color = t.acc, shadow = false, wrap = true, face = "mono")
+        MBtn("Copiar endereço") { clip.setText(androidx.compose.ui.text.AnnotatedString(url)) }
+    }
+    PcStep(2, "Rode no PC", "No terminal, dentro da pasta do arquivo, digite:") {
+        T(cmd, 14f, color = t.text, shadow = false, wrap = true, face = "mono")
+        MBtn("Copiar comando") { clip.setText(androidx.compose.ui.text.AnnotatedString(cmd)) }
+        Hint("Ele mostra o IP do PC. Se o Windows perguntar do firewall, permita em rede privada.")
+    }
+    PcStep(3, "Coloque o IP aqui", "Celular e PC precisam estar no mesmo Wi-Fi.") {
+        Field("IP do PC", cfg.pcIp) { v -> Store.update { it.copy(pcIp = v.trim()) } }
+        Field("Senha (a mesma do comando)", cfg.pcKey) { v -> Store.update { it.copy(pcKey = v) } }
+        Field("Nome do PC", cfg.pcName) { v -> Store.update { it.copy(pcName = v) } }
+    }
+    PcStep(4, "Envie", "Em qualquer app (galeria, arquivos, navegador): Compartilhar → \"Enviar pro PC\". O arquivo cai na pasta Recebidos do PC.") {}
+}
+
+@Composable
+fun PcStep(n: Int, title: String, text: String, content: @Composable ColumnScope.() -> Unit) {
+    val t = LocalTok.current
+    val cfg = LocalCfg.current
+    Section("Passo $n") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(34.dp).clip(cfg.iconShape()).background(t.acc), contentAlignment = Alignment.Center) {
+                T("$n", 16f, color = t.onAcc, weight = 800, shadow = false)
+            }
+            T(title, 17f, color = t.text, weight = 700, shadow = false, wrap = true)
+        }
+        Hint(text)
+        content()
     }
 }
 
